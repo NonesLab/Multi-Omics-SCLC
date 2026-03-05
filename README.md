@@ -8,9 +8,11 @@ The scripts presented here are related to the article “Multi-omics reveals key
 
 
 This figure was created in BioRender (www.biorender.com).
-Summary:
+
+## Summary:
 This repository contains the workflow used to generate the data presented in the manuscript. This workflow uses idat.files (methylation arrays raw data) and outputs from other Tools and analysis workflows referenced below.
-Requirements and inputs:
+
+## Requirements and inputs:
 1)	R and suit of publicly available packages.
 2)	idat.files (raw data from Illumina EPIC arrays) - GSE307029
 3)	Clinical Information – Supplementary Table 1
@@ -28,5 +30,5 @@ GSEA was executed with the R package fgsea v 1.32.0.( https://github.com/alsergl
 MSI was estimated with MSIsensor v0.2 (Niu et al. Bioinformatics. 2014;30(7):1015-6.)
 Mutational Signatures - R package YAPSA v1.34.0 (Hübschmann et al Genes Chromosomes Cancer. 2021;60(5):314-31) (https://bioconductor.org/packages/YAPSA)  
 
-Outputs:
+## Outputs:
 The Workflow script produces tables and figures presented in the manuscript.
