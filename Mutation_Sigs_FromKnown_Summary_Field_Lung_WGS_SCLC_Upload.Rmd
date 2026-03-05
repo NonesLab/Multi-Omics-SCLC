@@ -1,0 +1,637 @@
+---
+title: |
+  | \vspace*{3cm} Fielding Lung SCLC - Illumina & BGI WGS 
+  | Single Base Substitution (SBS) & Indel Mutational Signature 
+  | Comparison to COSMIC v3.2 (78) SBS & (18) Indel Signatures \vspace{3cm}
+date: |
+  | `r format(Sys.time(), "%d %B, %Y")` \newpage 
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    number_sections: yes
+    toc: yes
+    toc_depth: 4
+    fig_caption: yes
+    keep_tex: yes
+  html_document:
+    toc: true
+highlight: zenburn
+includes:
+  before_body:
+  - textt{\char`\\newpage}
+header-includes:
+  - \usepackage{fancyhdr}
+  - \usepackage{xcolor, hyperref}
+  - \usepackage{lmodern}
+  - \usepackage{courier}
+  - \renewcommand*\familydefault{\sfdefault}
+  - \usepackage{pdflscape}  
+  - \newcommand{\blandscape}{\begin{landscape}} 
+  - \newcommand{\elandscape}{\end{landscape}}
+  - \setlength{\headheight}{28pt}
+  - \setlength{\footskip}{28pt}
+  - \pagestyle{fancy}
+  - \renewcommand{\headrulewidth}{0.5pt}
+  - \renewcommand{\footrulewidth}{0.5pt}
+  - \cfoot{\thepage}
+  - \rhead{\scriptsize The University of Queensland \\ 280-284 Sir Fred Schonell Dr, St Lucia, QLD 4067 Australia\\T +61 (7) 3365 1111 | W \url{www.uq.edu.au}}
+  - \hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue}
+  - \fancypagestyle{plain}{\pagestyle{fancy}}
+  - \usepackage{float}
+---
+
+```{r global-options, include=FALSE}
+###
+# load packages required
+###
+library(knitr)
+knitr::opts_chunk$set(dpi=100, echo=FALSE, warning=FALSE, message=FALSE, 
+                      fig.show='asis', fig.keep='all', fig.width=6, fig.height=6) 
+# to remove message from xtable
+library(xtable)
+options(xtable.comment = FALSE)
+# acquire library for the analysis
+packages = c("circlize", "ComplexHeatmap", "data.table", "dplyr", "cowplot",
+             "ggplot2", "gtable", "ggpubr", "ggfortify", "scales", "grid", "gridExtra", "readr",
+             "RColorBrewer", "stringi", "reshape2", "BSgenome", 
+             "magrittr", "YAPSA", "reticulate") 
+
+loadpak = function(pkg){
+ sapply(pkg, require, character.only=TRUE)
+}
+loadpak(packages)
+
+```
+
+\newpage  
+
+```{r study-options, include=FALSE}
+###
+# Nominate the STUDY files and variable names to be used for the analysis
+###
+# **********
+# import functions for script
+# *********
+#
+#   ********************** nominate study directory ***************************
+#
+study_dir = ""
+source(paste0(study_dir, "Signatures/WGS_SCLC_Analysis/Mutation_Sigs_FromKnown_Functions_Field_Lung_WGS_SCLC_Upload.R"))
+# **********
+# import variable declarations for script
+# *********
+source(paste0(study_dir, "Signatures/WGS_SCLC_Analysis/Mutation_Sigs_FromKnown_Declarations_Field_Lung_WGS_SCLC_Upload.R"))
+
+``` 
+
+\newpage
+
+#  SBS Signatures Identified against `r signature_matrix_name `.  
+
+```{r create-vcf-datasets}
+# create one large study vcf
+sequence_types = ifelse(WGS_only, 
+                        "WGS",
+                        ifelse(WES_only, "WES", ""))
+if(sequence_types==""){
+  sequence_types=c("WGS", "WES")
+}
+seq_vcf_data = list()
+seq_vcf_files = list()
+full_study_data = study_data
+full_sample_data = sample_data
+for (seq_type in sequence_types){
+  if ("YAPSA" %in% sig_packages){
+    RData_datafile = paste0(study_dir, "Signatures/WGS_SCLC_Analysis/RData/WGS_SCLC_77Samples_SNV_calls.RData")
+    if (file.exists(RData_datafile)) {
+      load(RData_datafile)
+      vcf_data = SNVs_HC_type_data$all
+      vcf_data %<>% dplyr::filter(grepl(paste(study_data$donorLabel, collapse="|"), UniqueLabel))
+    } else {
+      vcf_data = build.vcf.data(study.data=study_data,
+                                SNV.file.end=vcf_file_ending,
+                                temp.dir=temp_dir)
+      save(vcf_data, file=RData_datafile)
+    }
+    seq_vcf_data[[seq_type]] = vcf_data
+  } 
+}
+
+```
+
+
+```{r setup-plot-summary-parameters, fig.width=7, fig.heigth=5, results='asis'}
+# assign plot parameters
+grid_colour = "#D3D3D3"
+grid_lty = "solid"
+#plot parameters
+w_bar1 = 0.4
+w_bar2 = 0.8
+w_dodge = 2*w_bar1
+# size of fonts for one plot per page
+title_size1 = 12
+xsize1 = 8
+legend_title_size1 = 10
+legend_txt_size1 = 8
+legend_key_size1 = 4
+# size of fonts for two plots per page
+title_size2 = 10
+xsize2 = 6
+legend_title_size2 = 9
+legend_txt_size2 = 7
+legend_key_size2 = 3.5
+xlab_size = 9
+ylab_size = 9
+# size of large legends for two plots per page
+legend_title_size3 = 7
+legend_txt_size3 = 6
+legend_key_size3 = 2.5
+xlab_size2 = 7
+ylab_size2 = 7
+xsize3 = 5
+
+```
+
+
+```{r create-YAPSA-dataset}
+# load the signatures or create the signatures if they don't already exist
+SBS_sig = list()
+YAPSA_sample = list()
+reporting = "perPID"
+analysis_type = paste(ifelse(length(sig_packages)>1, 
+                             paste(paste(c(sig_packages, sig_cutoff_text), collapse="_"), "_cutoffs", sep=""),
+                             ifelse(length(sig_cutoff$YAPSA)==1, 
+                                    paste(sig_packages, "_", sig_cutoff$YAPSA, "_cutoff_", nrow(study_data), "Samples", sep=""),
+                                    paste(sig_packages, "_Optimised_cutoffs", sep=""))), sep="")
+sbs_analysis_dir = paste(results_dir, analysis_type, "/SBS_Signatures/", sep="")
+create.dir(sbs_analysis_dir)
+for (seq_type in sequence_types){
+  WGS_only = ifelse(seq_type=="WGS", TRUE, FALSE)
+  WES_only = ifelse(seq_type=="WES", TRUE, FALSE)
+  sbs_vcf_data = as.data.frame(seq_vcf_data[[seq_type]])
+  colnames(sbs_vcf_data)[which(colnames(sbs_vcf_data)=="UniqueLabel")] = "PID"
+  sbs_vcf_data %<>% dplyr::mutate(ALT=ifelse(Tumor_Seq_Allele1==Reference_Allele, Tumor_Seq_Allele2, Tumor_Seq_Allele1))
+  sbs_vcf_data = dplyr::select(sbs_vcf_data, PID, Chromosome, Start_Position, Reference_Allele, ALT)
+  colnames(sbs_vcf_data) = c("PID", "CHR", "POS", "REF", "ALT")
+  sbs_vcf_data %<>% dplyr::filter(!REF=="-", !ALT=="-")
+  sbs_vcf_data$POS = as.numeric(sbs_vcf_data$POS)
+  sbs_vcf_data %<>% dplyr::filter(CHR%in%c(1:22, "X", "Y"))
+  sbs_vcf_data %<>% dplyr::mutate(CHR = paste0("chr", CHR))
+  sbs_vcf_data = filter(sbs_vcf_data, nchar(REF)==1, nchar(ALT)==1)
+  sbs_vcf_data$PID = sapply(sbs_vcf_data$PID, function(x) substring(x, 1, 14))
+  RData_datafile = paste(study_prefix, 
+                         ifelse(WGS_only, "_IB_WGS_", ifelse(WES_only, "_WES_", "_")), 
+                         paste(sig_packages, "_", sig_cutoff$YAPSA, "cutoff_", sep=""),
+                         gsub(" ", "_", signature_matrix_name), 
+                         ifelse(report_subgroups, "_withSubType", ""), ".RData", sep="")
+  if (!file.exists(paste(sbs_analysis_dir, RData_datafile, sep=""))){
+    count_dir = paste(working_dir, "Results/YAPSA/YAPSA_0.06_cutoff_76Samples/SBS_Signatures/", sep="")
+    count_file = ifelse(WES_only,
+                        "Fielding_-_Lung_sequencing_Illumina_WES_YAPSA_0.1cutoff_COSMIC_v3.2_SBS_withSubType.RData",
+                        "Fielding_-_Lung_All_Seq_IB_WGS_YAPSA_0.06cutoff_COSMIC_v3.2_SBS_withSubType.RData"
+                        )
+    if (file.exists(paste(count_dir, count_file, sep=""))){
+      load(paste(count_dir, count_file, sep=""))
+      count_mat = SBS_signatures$YAPSA$matrix
+    } else {
+      count_mat = NULL
+    }
+    SBS_signatures = get.signatures(sample.vcf.input=sbs_vcf_data,
+                                    count.mat = count_mat,
+                                    sig.matrix=sig_matrix,
+                                    ref.genome=ref_genome,
+                                    packages=sig_packages,
+                                    analysis.type="SBS",
+                                    sig.cutoff=sig_cutoff,
+                                    sig.ind.df=sig_ind_df)
+    SBS_signatures = get.confidence.levels(sig.list = SBS_signatures,
+                                           package="YAPSA")
+    # Build Summary data
+    package="YAPSA"
+    study_data = full_study_data[grep(seq_type, full_study_data$UniqueLabel),]
+    sample_data = full_sample_data[grep(seq_type, full_sample_data$PID),]
+    YAPSA_sample_df = sample_data
+    YAPSA_sample_df$subgroup = factor(YAPSA_sample_df$subgroup, levels=levels(sample_data$subgroup))
+    colnames(YAPSA_sample_df) = toupper(colnames(YAPSA_sample_df))
+    YAPSA_sample_df = make_subgroups_df(YAPSA_sample_df, SBS_signatures$YAPSA$LCD_cutoff[[reporting]]$exposures)
+    YAPSA_sample_df$subgroup = factor(YAPSA_sample_df$subgroup, levels=levels(sample_data$subgroup))
+    if (report_subgroups){
+      YAPSA_sample_df$col = sapply(YAPSA_sample_df$subgroup, function(x) level_cols[which(levels(YAPSA_sample_df$subgroup)==x)])
+    } else {
+      YAPSA_sample_df$col = sapply(YAPSA_sample_df$subgroup, 
+                                   function(x) ifelse(x=="Subgroup", "#aaaaaa", "#dddddd"))
+    }
+    save(SBS_signatures, YAPSA_sample_df, file=paste(sbs_analysis_dir, RData_datafile, sep=""))
+  } else {
+    load(paste(sbs_analysis_dir, RData_datafile, sep=""))
+  }
+  SBS_sig[[seq_type]] = SBS_signatures
+  YAPSA_sample[[seq_type]] = YAPSA_sample_df
+}
+
+```
+
+
+```{r plot-SBS-summary-YAPSA-counts-perpid, fig.width=12, fig.height=20, results='asis'}
+# Build Summary data
+package="YAPSA"
+#  SBS Signatures Identified against `r signature_matrix_name `.  
+conf_perPID_plot = list()
+p_yapsa_sbs_perPID = list()
+p_yapsa_sbs_comb_perPID = list()
+YAPSA_summary_comb = list()
+cluster_data = as.data.frame(fread(file=paste0(study_dir, "Methylation/WGS_SCLC_Analysis/Sample_Sheets/Fielding_-_Lung_WGS_SCLC_with_MethClust_82SampleSheet_v14.csv")))
+cluster_data %<>% dplyr::arrange(Meth_Index)
+for (seq_type in sequence_types){
+  WGS_only = ifelse(seq_type=="WGS", TRUE, FALSE)
+  WES_only = ifelse(seq_type=="WES", TRUE, FALSE)
+  # create YAPSA subgroup information
+  YAPSA_signatures = SBS_sig[[seq_type]]$YAPSA
+  YAPSA_list = YAPSA_signatures$LCD_cutoff[[reporting]]
+  YAPSA_list = filter.yapsa.result(sig.list=YAPSA_list)
+  # create analysis sample subgroups
+  YAPSA_subgroups_df = filter(YAPSA_sample[[seq_type]], PID%in%colnames(YAPSA_list$exposures))
+  YAPSA_subgroups_df$subgroup = factor(gsub("T", "Group ", YAPSA_subgroups_df$subgroup), levels=c("Group 1", "Group 2", "Group 3", "Group 4"))
+  # num_plots = ceiling(ncol(YAPSA_list$exposures)/100)
+  # num_samples = floor(ncol(YAPSA_list$exposures)/num_plots)
+  start = 1
+  end = ncol(YAPSA_list$exposures)
+  # create confidence plot for sample order
+  conf_perPID_plot[[seq_type]] = myplotExposuresConfidence(in_complete_df = YAPSA_list$confidence,
+                                                           in_sigInd_df = YAPSA_list$out_sig_ind_df,
+                                                           in_subgroups_df = YAPSA_subgroups_df, # YAPSA_sample[[seq_type]],
+                                                           plot.title = paste("SBS Signature Confidence - ", package, 
+                                                                              ifelse(reporting=="perPID", " sample", paste(" ", reporting, sep="")),  
+                                                                              " calls.", sep=""))
+  # order samples by highest number of mutatons per cluster type
+  sample_order = conf_perPID_plot[[seq_type]]$order 
+  sample_order = c(sample_order[which(gsub(paste0("_", seq_type), "", sample_order)%in%cluster_data$Sample_Name[which(cluster_data$Meth_Cluster=="Group1")])],
+                   sample_order[which(gsub(paste0("_", seq_type), "", sample_order)%in%cluster_data$Sample_Name[which(cluster_data$Meth_Cluster=="Group2")])],
+                   sample_order[which(gsub(paste0("_", seq_type), "", sample_order)%in%cluster_data$Sample_Name[which(cluster_data$Meth_Cluster=="Group3")])],
+                   sample_order[which(gsub(paste0("_", seq_type), "", sample_order)%in%cluster_data$Sample_Name[which(cluster_data$Meth_Cluster=="Group4")])])
+  plot_order = sample_order[which(sample_order%in%colnames(YAPSA_list$exposures))]
+  plot_samples = plot_order[start:end]
+  confidence_df = filter(YAPSA_list$confidence, sample%in%plot_samples)
+  exposure_df = select(as.data.frame(YAPSA_list$exposures), all_of(plot_samples))
+  subgroups_df = filter(YAPSA_subgroups_df, PID%in%plot_samples)
+  plot_sample_order = plot_order  
+  # create summary data for exposure plots
+  YAPSA_summary = as.matrix(exposure_df)
+  if (nrow(YAPSA_summary)==1){
+    YAPSA_summary = matrix(YAPSA_summary[,plot_sample_order], nrow=nrow(YAPSA_summary), 
+                           dimnames = list(rownames(YAPSA_summary), plot_sample_order))
+  } else {
+    YAPSA_summary = YAPSA_summary[,plot_sample_order]
+  }
+  plot_sig = sig_matrix[,which(colnames(sig_matrix)%in%rownames(exposure_df))]
+  colnames(plot_sig) = gsub("nature", "", colnames(plot_sig))
+  # create exposure plots
+  abs_types = c("relative", "absolute")
+  for (abs_type in abs_types){
+    p_yapsa_sbs_perPID[[paste(seq_type, abs_type, sep="_")]] = plot.contrib.summary(contribution=YAPSA_summary, 
+                                                                                    signatures=plot_sig, 
+                                                                                    subtypes.df=subgroups_df,
+                                                                                    plot.title = paste(paste0(toupper(substring(abs_types[which(abs_types==abs_type)], 1,1)), substring(abs_types[which(abs_types==abs_type)], 2, nchar(abs_types[which(abs_types==abs_type)]))),
+                                                                                                       "SBS Sigs on ", ifelse(WES_only, "WES - ", "WGS - "), paste(sig_packages, collapse=" & "), 
+                                                                                                       ifelse(reporting=="perPID", " sample", paste(" ", reporting, sep="")), 
+                                                                                                       " calls with ", paste(sig_cutoff$YAPSA*100, "% cutoff", sep=""),
+                                                                                                       " (samples ", start, " - ", end, ")", sep=""),
+                                                                                    mode=abs_type, 
+                                                                                    palette=sig_colours)
+  }
+  YAPSA_list$out_sig_ind_df %<>% mutate(cat=sapply(sig, function(x) sig_ind_df$category[which(sig_ind_df$sig==x)]),
+                                        cat_col=sapply(sig, function(x) sig_ind_df$cat_cols[which(sig_ind_df$sig==x)]))
+  art_unknown = YAPSA_list$out_sig_ind_df[which(YAPSA_list$out_sig_ind_df$cat%in%c("Artifact", "Unknown")),]
+  YAPSA_list$out_sig_ind_df = rbind(YAPSA_list$out_sig_ind_df[which(!YAPSA_list$out_sig_ind_df$cat%in%c("Artifact", "Unknown")),], art_unknown)
+  comb_YAPSA_summary = NULL
+  comb_colours = c()
+  new_plot_sig = NULL
+  for (cat in unique(YAPSA_list$out_sig_ind_df$cat)){
+    new.data = YAPSA_list$exposures[which(rownames(YAPSA_list$exposures)%in%YAPSA_list$out_sig_ind_df$sig[which(YAPSA_list$out_sig_ind_df$cat==cat)]),]
+    new.plot.sig = plot_sig[,which(colnames(plot_sig)%in%YAPSA_list$out_sig_ind_df$sig[which(YAPSA_list$out_sig_ind_df$cat==cat)])]
+    if (nrow(new.data)>1){
+      new.data = t(as.data.frame(colSums(new.data)))
+      new.plot.sig = as.data.frame(rowSums(new.plot.sig)/ncol(new.plot.sig))
+    }
+    rownames(new.data) = cat
+    if (is.null(comb_YAPSA_summary)){
+      comb_YAPSA_summary = new.data
+      new_plot_sig = new.plot.sig
+    } else{
+      comb_YAPSA_summary = rbind(comb_YAPSA_summary, new.data)
+      new_plot_sig = cbind(new_plot_sig, new.plot.sig)
+    }
+    colnames(new_plot_sig)[ncol(new_plot_sig)] = cat
+    
+    comb_colours = c(comb_colours, unique(YAPSA_list$out_sig_ind_df$cat_col[which(YAPSA_list$out_sig_ind_df$cat==cat)]))
+    names(comb_colours)[length(comb_colours)] = cat
+  }
+  YAPSA_summary_comb[[seq_type]] = as.matrix(comb_YAPSA_summary)
+  comb_YAPSA_summary = as.matrix(comb_YAPSA_summary)
+  comb_YAPSA_summary = comb_YAPSA_summary[,plot_sample_order]
+  for (abs_type in abs_types){
+    if (abs_type=="absolute"){
+      comb_plot_sig = new_plot_sig
+    } else {
+      comb_plot_sig = plot_sig
+    }
+    p_yapsa_sbs_comb_perPID[[paste(seq_type, abs_type, sep="_")]] = plot.contrib.summary(contribution=as.matrix(comb_YAPSA_summary),
+                                                                                         signatures=comb_plot_sig,
+                                                                                         subtypes.df=subgroups_df,
+                                                                                         plot.title = paste(paste0(toupper(substring(abs_types[which(abs_types==abs_type)], 1,1)), substring(abs_types[which(abs_types==abs_type)], 2, nchar(abs_types[which(abs_types==abs_type)]))),
+                                                                                                            "Combined SBS Sigs on ", ifelse(WES_only, "WES - ", "WGS - "), paste(sig_packages, collapse=" & "), 
+                                                                                                            ifelse(reporting=="perPID", " sample", paste(" ", reporting, sep="")), 
+                                                                                                            " calls with ", paste(sig_cutoff$YAPSA*100, "% cutoff", sep=""), 
+                                                                                                            " (samples ", start, " - ", end, ")", sep=""),
+                                                                                         mode=abs_type, 
+                                                                                         palette=comb_colours)
+  }
+  
+  cat(paste("##  ", seq_type, " SBS Signatures Identified against ", signature_matrix_name, ". \n\n", sep=""))
+  grid.arrange(p_yapsa_sbs_perPID[[paste(seq_type, "relative", sep="_")]], p_yapsa_sbs_perPID[[paste(seq_type, "absolute", sep="_")]], p_yapsa_sbs_comb_perPID[[paste(seq_type, "relative", sep="_")]], p_yapsa_sbs_comb_perPID[[paste(seq_type, "absolute", sep="_")]], ncol=1)
+  grid.arrange(conf_perPID_plot[[seq_type]]$grob_all)
+}
+
+```
+
+
+
+```{r get-YAPSA-summary-tables-perpid }
+# # write summary tables
+# for (seq_type in sequence_types){
+#   WGS_only = ifelse(seq_type=="WGS", TRUE, FALSE)
+#   WES_only = ifelse(seq_type=="WES", TRUE, FALSE)
+#   # create summary data for tables
+#   YAPSA_summary = as.matrix(SBS_sig[[seq_type]]$YAPSA$LCD_cutoff[[reporting]]$exposures)
+#   sample_order = conf_perPID_plot[[seq_type]]$order
+#   if (nrow(YAPSA_summary)==1){
+#     YAPSA_summary = matrix(YAPSA_summary[,sample_order], nrow=nrow(YAPSA_summary), dimnames = list(rownames(YAPSA_summary), sample_order))
+#   } else {
+#     YAPSA_summary = YAPSA_summary[,sample_order]
+#   }
+#   table_type="Count"
+#   table_data = build.summary.sig.table(summary.data=YAPSA_summary,
+#                                        subtypes_df = YAPSA_sample[[seq_type]],
+#                                        type=table_type)
+#   datafile = paste(study_prefix, ifelse(WGS_only, "_IB_WGS_", ifelse(WES_only, "_WES_", "_")), 
+#                    ifelse(table_type=="Count", "Absolute_SBS_counts_", "Relative_SBS_counts_"),
+#                    gsub(" ", "_", signature_matrix_name), 
+#                    ifelse(report_subgroups, "_withSubType", ""), ".tsv", sep="")
+#   write_tsv(table_data, file=paste(sbs_analysis_dir, datafile, sep=""))
+#   table_type = "Percent"
+#   table_data = build.summary.sig.table(summary.data=YAPSA_summary,
+#                                        subtypes_df=YAPSA_sample[[seq_type]],
+#                                        type=table_type)
+#   datafile = paste(study_prefix, ifelse(WGS_only, "_IB_WGS_", ifelse(WES_only, "_WES_", "_")), 
+#                    ifelse(table_type=="Count", "Absolute_SBS_counts_", "Relative_SBS_counts_"),
+#                    gsub(" ", "_", signature_matrix_name), 
+#                    ifelse(report_subgroups, "_withSubType", ""), ".tsv", sep="")
+#   write_tsv(table_data, file=paste(sbs_analysis_dir, datafile, sep=""))
+#   table_data = build.summary.sig.table(summary.data=YAPSA_summary_comb[[seq_type]],
+#                                        subtypes_df=YAPSA_sample[[seq_type]],
+#                                        type=table_type)
+#   datafile = paste(study_prefix, ifelse(WGS_only, "_IB_WGS_", ifelse(WES_only, "_WES_", "_")), 
+#                    ifelse(table_type=="Count", "Combined_Absolute_SBS_counts_", "Combined_Relative_SBS_counts_"),
+#                    gsub(" ", "_", signature_matrix_name), 
+#                    ifelse(report_subgroups, "_withSubType", ""), ".tsv", sep="")
+#   write_tsv(table_data, file=paste(sbs_analysis_dir, datafile, sep=""))
+#   table_data =SBS_sig[[seq_type]]$YAPSA$LCD_cutoff[[reporting]]$confidence
+#   table_data$sample = factor(table_data$sample, levels=sample_order)
+#   table_data = table_data[order(table_data$sample),]
+#   datafile = paste(study_prefix, ifelse(WGS_only, "_IB_WGS_", ifelse(WES_only, "_WES_", "_")), 
+#                    "SBS_Confidence_", 
+#                    gsub(" ", "_", signature_matrix_name), 
+#                    ifelse(report_subgroups, "_withSubType", ""), ".tsv", sep="")
+#   write_tsv(table_data, file=paste(sbs_analysis_dir, datafile, sep=""))
+# }
+
+``` 
+  
+\newpage  
+
+#  INDEL Signatures Identified against `r indel_sig_matrix_name `.  
+
+```{r create-indel-signatures-YAPSA, include=FALSE}
+indel_analysis_dir = paste(results_dir, analysis_type, "/Indel_Signatures/", sep="")
+create.dir(indel_analysis_dir)
+Indel_sig = list()
+for (seq_type in sequence_types){
+  WGS_only = ifelse(seq_type=="WGS", TRUE, FALSE)
+  WES_only = ifelse(seq_type=="WES", TRUE, FALSE)
+  vcf_indel =as.data.frame(seq_vcf_data[[seq_type]])
+  colnames(vcf_indel)[which(colnames(vcf_indel)=="UniqueLabel")] = "PID"
+  vcf_indel %<>% dplyr::mutate(ALT=ifelse(Tumor_Seq_Allele1==Reference_Allele, Tumor_Seq_Allele2, Tumor_Seq_Allele1))
+  vcf_indel = dplyr::select(vcf_indel, PID, Chromosome, Start_Position, Reference_Allele, ALT)
+  colnames(vcf_indel)[1:5] = c("PID", "CHROM", "POS", "REF", "ALT")
+  vcf_indel %<>% dplyr::filter((REF=="-"|ALT=="-"))
+  vcf_indel$REF = sapply(vcf_indel$REF, function(x) ifelse(x=="-", "", x))
+  vcf_indel$ALT = sapply(vcf_indel$ALT, function(x) ifelse(x=="-", "", x))
+  vcf_indel$POS = as.numeric(vcf_indel$POS)
+  vcf_indel %<>% dplyr::filter(CHROM%in%c(1:22, "X", "Y"))
+  vcf_indel %<>% dplyr::mutate(CHROM = paste0("chr", CHROM))
+  vcf_indel$PID = sapply(vcf_indel$PID, function(x) substring(x, 1, 14))
+  count_dir = paste(working_dir, "Results/YAPSA/YAPSA_0.06_cutoff_76Samples/Indel_Signatures/", sep="")
+  count_file = ifelse(WES_only,
+                      "Fielding_-_Lung_sequencing_Illumina_WES_YAPSA_0.06cutoff_COSMIC_v3.2_Indels_withSubType.RData",
+                      "Fielding_-_Lung_All_Seq_IB_WGS_YAPSA_0.06cutoff_COSMIC_v3.2_Indels_withSubType.RData"
+                      )
+  if (file.exists(paste(count_dir, count_file, sep=""))){
+    load(paste(count_dir, count_file, sep=""))
+    count_mat = YAPSA_Indel_sigs$YAPSA$matrix
+    # included_samp = colnames(count_mat)[which(colSums(count_mat)>=30)]
+    # excluded_samp = colnames(count_mat)[which(colSums(count_mat)<30)]
+    analysis_mat = count_mat #[, included_samp]
+  } 
+  RData_datafile = paste(study_prefix, ifelse(WES_only, "_WES_", "_IB_WGS_"), 
+                         paste("YAPSA_", indel_sig_cutoff, "cutoff_", sep=""),
+                         gsub(" ", "_", indel_sig_matrix_name), 
+                         ifelse(report_subgroups, "_withSubType", ""), 
+                         ifelse(is.null(count_mat),
+                                "",
+                                ifelse(length(excluded_samp)>0, "_excluded_samples", "")), ".RData", sep="")
+  analysis_type = paste("YAPSA_", indel_sig_cutoff, "_cutoff_", nrow(study_data), "Samples", sep="")
+  package = "YAPSA"
+  if (file.exists(paste(indel_analysis_dir, RData_datafile, sep=""))){
+    load(paste(indel_analysis_dir, RData_datafile, sep=""))
+    message(paste("Have loaded indel signatures for", seq_type))
+  } else {
+    yapsa_data = vcf_indel
+    YAPSA_Indel_sigs = get.signatures(sample.vcf.input=yapsa_data,
+                                      count.mat=analysis_mat,
+                                      sig.matrix=indel_sig_matrix,
+                                      ref.genome=ref_genome,
+                                      packages=package,
+                                      analysis.type="Indel",
+                                      sig.cutoff=indel_sig_cutoff,
+                                      sig.ind.df = indel_sig_ind_df)
+    YAPSA_Indel_sigs = get.confidence.levels(sig.list = YAPSA_Indel_sigs,
+                                             package="YAPSA")
+   save(YAPSA_Indel_sigs, file=paste(indel_analysis_dir, RData_datafile, sep=""))
+   message(paste("Have created and saved indel signatures for", seq_type))
+  }
+  Indel_sig[[seq_type]]=YAPSA_Indel_sigs
+  reporting="perPID"
+}
+
+```
+
+
+```{r plot-summary-YAPSA-Indel-counts-perpid, fig.width=12, fig.height=20, results='asis'}
+conf_perPID_indel_plot = list()
+p_yapsa_indel_perPID = list()
+p_yapsa_indel_comb_perPID = list()
+indel_summary_comb = list()
+for (seq_type in sequence_types){
+  WGS_only = ifelse(seq_type=="WGS", TRUE, FALSE)
+  WES_only = ifelse(seq_type=="WES", TRUE, FALSE)
+  plot_sig = indel_sig_matrix
+  colnames(plot_sig) = gsub("nature", "", colnames(plot_sig))
+  package="YAPSA"
+  sig_order = c(colnames(plot_sig), "unassigned")
+  start = 1
+  end = ncol(Indel_sig[[seq_type]]$YAPSA$LCD_cutoff[[reporting]]$exposures)
+  YAPSA_indel_list = Indel_sig[[seq_type]]$YAPSA$LCD_cutoff[[reporting]]
+  sample_order = sample_order[which(sample_order%in%colnames(YAPSA_indel_list$exposures))] #gsub("_T", paste0("_", seq_type), cluster_data$Donor_Label)
+  plot_samples = sample_order
+  confidence_df = filter(YAPSA_indel_list$confidence, sample%in%plot_samples)
+  exposure_df = select(YAPSA_indel_list$exposures, all_of(plot_samples))
+  conf_perPID_indel_plot[[seq_type]] = myplotExposuresConfidence(in_complete_df = confidence_df,
+                                                                 in_sigInd_df = YAPSA_indel_list$out_sig_ind_df,
+                                                                 in_subgroups_df = subgroups_df,
+                                                                 plot.title = paste("Indel Signature Confidence - ", package, 
+                                                                                    ifelse(reporting=="perPID", " sample", paste(" ", reporting, sep="")), 
+                                                                                    " calls (samples ", start, " - ", end, ")", sep=""))
+  plot_sample_order = sample_order
+  # create summary data for exposure plots
+  YAPSA_summary = as.matrix(exposure_df)
+  if (nrow(YAPSA_summary)==1){
+    YAPSA_summary = matrix(YAPSA_summary[,plot_sample_order], nrow=nrow(YAPSA_summary), 
+                           dimnames = list(rownames(YAPSA_summary), plot_sample_order))
+  } else {
+    YAPSA_summary = YAPSA_summary[,plot_sample_order]
+    }
+  colnames(plot_sig) = gsub("nature", "", colnames(plot_sig))
+  # create exposure plots
+  for (abs_type in abs_types){
+    p_yapsa_indel_perPID[[paste(seq_type, abs_type, sep="_")]] = plot.contrib.summary(contribution=YAPSA_summary, 
+                                                                                      signatures=plot_sig, 
+                                                                                      subtypes.df=subgroups_df,
+                                                                                      plot.title = paste(paste0(toupper(substring(abs_types[which(abs_types==abs_type)], 1,1)), substring(abs_types[which(abs_types==abs_type)], 2, nchar(abs_types[which(abs_types==abs_type)]))),
+                                                                                                         "Indel Signatures - YAPSA", ifelse(WES_only, " WES", " WGS"),
+                                                                                                         ifelse(reporting=="perPID", " sample", paste(" ", reporting, sep="")), 
+                                                                                                         " calls with ", paste(indel_sig_cutoff*100, "% cutoff", sep=""),
+                                                                                                         " (samples ", start, " - ", end, ")", sep=""),
+                                                                                      mode=abs_type, 
+                                                                                      palette=indel_colours)
+  }
+  art_unknown = YAPSA_indel_list$out_sig_ind_df[which(YAPSA_indel_list$out_sig_ind_df$category%in%c("Artifact", "Unknown")),]
+  indel_out_sigs = YAPSA_indel_list$out_sig_ind_df[which(!YAPSA_indel_list$out_sig_ind_df$category%in%c("Artifact", "Unknown")),]
+  YAPSA_indel_list$out_sig_ind_df = rbind(indel_out_sigs, art_unknown)
+  comb_YAPSA_indel_summary = NULL
+  new_indel_sig = NULL
+  comb_indel_colours = c()
+  for (cat in unique(YAPSA_indel_list$out_sig_ind_df$category)){
+    new.data = YAPSA_indel_list$exposures[which(rownames(YAPSA_indel_list$exposures)%in%YAPSA_indel_list$out_sig_ind_df$sig[which(YAPSA_indel_list$out_sig_ind_df$category==cat)]),]
+    new.plot.sig = plot_sig[,which(colnames(plot_sig)%in%YAPSA_indel_list$out_sig_ind_df$sig[which(YAPSA_indel_list$out_sig_ind_df$category==cat)])]
+    if (nrow(new.data)>1){
+      new.data = t(as.data.frame(colSums(new.data)))
+      new.plot.sig = as.data.frame(rowSums(new.plot.sig)/ncol(new.plot.sig))
+    }
+    if (is.null(comb_YAPSA_indel_summary)){
+      comb_YAPSA_indel_summary = new.data
+      new_indel_sig = as.data.frame(new.plot.sig)
+    } else{
+      comb_YAPSA_indel_summary = rbind(comb_YAPSA_indel_summary, new.data)
+      new_indel_sig = cbind(new_indel_sig, new.plot.sig)
+    }
+    rownames(comb_YAPSA_indel_summary)[nrow(comb_YAPSA_indel_summary)] = cat
+    colnames(new_indel_sig)[ncol(new_indel_sig)] = cat
+    comb_indel_colours = c(comb_indel_colours, unique(indel_sig_ind_df$cat_cols[which(indel_sig_ind_df$category==cat)]))
+    names(comb_indel_colours)[length(comb_indel_colours)] = cat
+  }
+  comb_YAPSA_indel_summary = as.matrix(comb_YAPSA_indel_summary)
+  indel_summary_comb[[seq_type]] = comb_YAPSA_indel_summary
+  comb_YAPSA_indel_summary = comb_YAPSA_indel_summary[,plot_sample_order]
+  for (abs_type in abs_types){
+    if (abs_type=="absolute"){
+      comb_plot_sig = new_indel_sig
+    } else {
+      comb_plot_sig = plot_sig
+    }
+    p_yapsa_indel_comb_perPID[[paste(seq_type, abs_type, sep="_")]] = plot.contrib.summary(contribution=as.matrix(comb_YAPSA_indel_summary),
+                                                                                           signatures=comb_plot_sig,
+                                                                                           subtypes.df=subgroups_df,
+                                                                                           plot.title = paste(paste0(toupper(substring(abs_types[which(abs_types==abs_type)], 1,1)), substring(abs_types[which(abs_types==abs_type)], 2, nchar(abs_types[which(abs_types==abs_type)]))),
+                                                                                                              "Combined Indel Sigs on ", ifelse(WES_only, "WES - YAPSA ", "WGS - YAPSA "), 
+                                                                                                              ifelse(reporting=="perPID", " sample", paste(" ", reporting, sep="")), 
+                                                                                                              " calls with ", paste(indel_sig_cutoff*100, "% cutoff", sep=""),
+                                                                                                              " (samples ", start, " - ", end, ")", sep=""),
+                                                                                           mode=abs_type, 
+                                                                                           palette=comb_indel_colours)
+  }
+  cat(paste("##  ", seq_type, " Indel Signatures Identified against ", signature_matrix_name, ". \n\n", sep=""))
+  grid.arrange(p_yapsa_indel_perPID[[paste(seq_type, "absolute", sep="_")]], p_yapsa_indel_perPID[[paste(seq_type, "relative", sep="_")]], p_yapsa_indel_comb_perPID[[paste(seq_type, "absolute", sep="_")]], p_yapsa_indel_comb_perPID[[paste(seq_type, "relative", sep="_")]], ncol=1)
+}
+
+```
+
+```{r create-paper-figure, fig.width=24, fig.height=12, results='asis' }
+for (seq_type in sequence_types){
+  # *************************
+  # Fig S10 a & b
+  # *************************
+  grid.arrange(p_yapsa_indel_comb_perPID[[paste(seq_type, "absolute", sep="_")]],  p_yapsa_sbs_comb_perPID[[paste(seq_type, "absolute", sep="_")]], p_yapsa_indel_comb_perPID[[paste(seq_type, "relative", sep="_")]], p_yapsa_sbs_comb_perPID[[paste(seq_type, "relative", sep="_")]], nrow=2)
+}
+
+```
+  
+```{r get-YAPSA-indel-summary-tables-perpid }
+# for (seq_type in sequence_types){
+#   WGS_only = ifelse(seq_type=="WGS", TRUE, FALSE)
+#   WES_only = ifelse(seq_type=="WES", TRUE, FALSE)
+#   table_type="Count"
+#   # create summary data for tables
+#   YAPSA_indel_summary = as.matrix(Indel_sig[[seq_type]]$YAPSA$LCD_cutoff[[reporting]]$exposures)
+#   sample_order = conf_perPID_indel_plot[[seq_type]]$order
+#   if (nrow(YAPSA_indel_summary)==1){
+#     YAPSA_indel_summary = matrix(YAPSA_indel_summary[,sample_order], nrow=nrow(YAPSA_indel_summary), dimnames = list(rownames(YAPSA_indel_summary), sample_order))
+#   } else {
+#     YAPSA_indel_summary = YAPSA_indel_summary[,sample_order]
+#   }
+#   table_data = set.table.themebuild.summary.sig.table(summary.data=YAPSA_indel_summary,
+#                                        subtypes_df = YAPSA_sample[[seq_type]],
+#                                        type=table_type)
+#   datafile = paste(study_prefix, ifelse(WES_only, "_WES_", "_IB_WGS_"), 
+#                    ifelse(table_type=="Count", "Absolute_Indel_counts_", "Relative_Indel_counts_"),
+#                    gsub(" ", "_", indel_sig_matrix_name), 
+#                    ifelse(report_subgroups, "_withSubType", ""), ".tsv", sep="")
+#   write_tsv(table_data, file=paste(indel_analysis_dir, datafile, sep=""))
+#   table_type = "Percent"
+#   table_data = build.summary.sig.table(summary.data=YAPSA_indel_summary,
+#                                        subtypes_df=YAPSA_sample[[seq_type]],
+#                                        type=table_type)
+#   datafile = paste(study_prefix, ifelse(WES_only, "_WES_", "_IB_WGS_"), 
+#                    ifelse(table_type=="Count", "Absolute_Indel_counts_", "Relative_Indel_counts_"),
+#                    gsub(" ", "_", indel_sig_matrix_name), 
+#                    ifelse(report_subgroups, "_withSubType", ""), ".tsv", sep="")
+#   write_tsv(table_data, file=paste(indel_analysis_dir, datafile, sep=""))
+#   table_data = build.summary.sig.table(summary.data=indel_summary_comb[[seq_type]],
+#                                        subtypes_df=YAPSA_sample[[seq_type]],
+#                                        type=table_type)
+#   datafile = paste(study_prefix, ifelse(WGS_only, "_IB_WGS_", ifelse(WES_only, "_WES_", "_")), 
+#                    ifelse(table_type=="Count", "Combined_Absolute_Indel_counts_", "Combined_Relative_Indel_counts_"),
+#                    gsub(" ", "_", indel_sig_matrix_name), 
+#                    ifelse(report_subgroups, "_withSubType", ""), ".tsv", sep="")
+#   write_tsv(table_data, file=paste(indel_analysis_dir, datafile, sep=""))
+#   table_data = Indel_sig[[seq_type]]$YAPSA$LCD_cutoff[[reporting]]$confidence
+#   table_data$sample = factor(table_data$sample, levels=sample_order)
+#   table_data = table_data[order(table_data$sample),]
+#   datafile = paste(study_prefix, ifelse(WES_only, "_WES_", "_IB_WGS_"), 
+#                    "Indel_Confidence_", 
+#                    gsub(" ", "_", indel_sig_matrix_name), 
+#                    ifelse(report_subgroups, "_withSubType", ""), ".tsv", sep="")
+#   write_tsv(table_data, file=paste(indel_analysis_dir, datafile, sep=""))
+# }
+  
+``` 
+

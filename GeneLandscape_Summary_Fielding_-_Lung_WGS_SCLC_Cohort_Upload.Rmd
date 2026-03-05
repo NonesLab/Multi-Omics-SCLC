@@ -1,0 +1,711 @@
+---
+title: |
+  | \vspace*{3cm}  Fielding Lung Illumina Sequencing 
+  | Summary for WGS - SCLC 
+  | Variant Landscape for Driver Genes \vspace*{3cm}
+author: |
+  | Vanessa Lakis \vspace{3cm}  
+date: |
+  | `r format(Sys.time(), "%d %B, %Y")` \newpage
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    number_sections: yes
+    toc: yes
+    toc_depth: 4
+    fig_caption: yes
+    keep_tex: yes
+  html_document:
+    toc: true
+highlight: zenburn
+  
+header-includes:
+  - \usepackage{fancyhdr}
+  - \usepackage{xcolor, hyperref}
+  - \usepackage{lmodern}
+  - \usepackage{courier}
+  - \renewcommand*\familydefault{\sfdefault}
+  - \usepackage{pdflscape}  
+  - \newcommand{\blandscape}{\begin{landscape}} 
+  - \newcommand{\elandscape}{\end{landscape}}
+  - \setlength{\headheight}{36.5pt}
+  - \setlength{\footskip}{28pt}
+  - \pagestyle{fancy}
+  - \renewcommand{\headrulewidth}{0.5pt}
+  - \renewcommand{\footrulewidth}{0.5pt}
+  - \cfoot{\thepage}
+  - \rhead{\scriptsize The University of Queensland \\ 280-284 Sir Fred Schonell Dr, St Lucia, QLD 4067 Australia\\T +61 (7) 3365 1111 | W \url{www.uq.edu.au}}
+  - \hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue}
+  - \fancypagestyle{plain}{\pagestyle{fancy}}
+  - \usepackage{float}
+---
+
+```{r, global-options, include=FALSE}
+# ***************
+# load packages required
+# ***************
+library(knitr)
+knitr::opts_chunk$set(dpi = 100, echo=FALSE, warning=FALSE, message=FALSE, 
+                      fig.show='asis', fig.keep = 'all', fig.pos="H", fig.align='center', fig.width=6, fig.height=6) 
+# to remove message from xtable
+library(xtable)
+options(xtable.comment = FALSE)
+
+# acquire library for the analysis
+packages = c("DT", "data.table", "dplyr", "tidyr", "magrittr", "readr",
+             "ggalt", "ggplot2", "gtable", "scales", "gridExtra", "ggpubr", "ggfortify", 
+             "RColorBrewer", "ComplexHeatmap", "circlize", "stringi", "reshape2", "maftools", "cowplot", "copynumber")
+loadpak = function(pkg){
+  sapply(pkg, require, character.only=TRUE)
+}
+loadpak(packages)
+
+```
+
+
+```{r, import-declarations-and-functions, include=FALSE}
+# **********
+# import functions for script
+# *********
+#
+#   ********************** nominate study directory ***************************
+#
+study_dir = ""
+source(paste0(study_dir, "GeneLandscape_Summary/WGS_SCLC_Analysis/GeneLandscape_Summary_Fielding_-_Lung_WGS_SCLC_Functions_Upload.R"))
+# ********** 
+# import declarations for script
+# *********
+source(paste0(study_dir, "GeneLandscape_Summary/WGS_SCLC_Analysis/GeneLandscape_Summary_Fielding_-_Lung_Declarations_Upload.R"))
+
+
+```
+
+\newpage  
+
+```{r, read-in-dataframes}
+if (full_study){
+  all_samples=c("WGS", "WES")
+} else if (WGS_only){
+  all_samples = "WGS"
+} else if (WES_only){
+  all_samples = "WES"
+} else {
+  all_samples = NULL
+}
+SNV = list(WGS=NULL,
+           WES=NULL)
+CNV = list(WGS=NULL,
+           WES=NULL)
+SV = list(WGS=NULL,
+          WES=NULL)
+for(samp_type in all_samples){
+  RData_file = paste(working_dir, "WGS_SCLC_Analysis/RData/", study_prefix, 
+                     ifelse(VEP_anno, "_VEP", "_MAF"), 
+                     ifelse(samp_type%in%c("WGS", "WES"), 
+                            paste("_", nrow(study_data[grep(samp_type, study_data$UniqueLabel),]), "_", samp_type, sep=""), 
+                            ""), "_filtered", ".RData", sep="")
+  if (samp_type%in%c("WGS", "WES")){
+    if (!file.exists(RData_file)){
+      SNV_data = populate.snv(study.data=study_data[grep(samp_type, study_data$UniqueLabel),])
+      SV_data = populate.sv(study.data=study_data[grep(samp_type, study_data$UniqueLabel),])
+      CNV_data = populate.cnv(study.data=study_data[grep(samp_type, study_data$UniqueLabel),], samp.type = samp_type)
+      if (samp_type=="WGS"){
+        wgs_study_data = study_data[grep(samp_type, study_data$UniqueLabel),]
+        save(wgs_study_data, SNV_data, SV_data, CNV_data, file=RData_file)
+      } else if (samp_type=="WES"){
+        wes_study_data = study_data[grep(samp_type, study_data$UniqueLabel),]
+        save(wes_study_data, SNV_data, SV_data, CNV_data, file=RData_file)
+      }
+    } else {
+      load(RData_file)
+    }
+  } 
+  SNV[[samp_type]] = SNV_data
+  CNV[[samp_type]] = CNV_data
+  SV[[samp_type]] = SV_data
+}
+
+```
+
+
+```{r, create-data-for-analysis}
+# create the data and sample data for the analysis
+SNV_data = NULL
+CNV_data = NULL
+SV_data = NULL
+snv_columns = colnames(SNV[[samp_type]]$data)
+
+for (samp_type in all_samples){
+  if(length(all_samples) == 1){
+    SNV_data = SNV[[samp_type]]$data
+    if (!is.null(CNV[[samp_type]])){
+      CNV_data = CNV[[samp_type]]
+    }
+    if (!is.null(SV[[samp_type]]$data)){
+      SV_data = SV[[samp_type]]$data
+    }
+  } else {
+    SNV_data = rbind(SNV_data, dplyr::select(SNV[[samp_type]]$data, all_of(snv_columns)))
+    if (samp_type %in% c("WGS", "WES") && !is.null(CNV[[samp_type]])){
+      CNV_data = rbind(CNV_data,
+                       data.frame(DonorLabel = CNV[[samp_type]]$DonorLabel,
+                                  UniqSampleLabel = CNV[[samp_type]]$UniqSampleLabel,
+                                  Hugo_Symbol = CNV[[samp_type]]$Hugo_Symbol,
+                                  Copy_Number_Variant = CNV[[samp_type]]$Copy_Number_Variant,
+                                  Copynumber = CNV[[samp_type]]$Copynumber))
+      }
+    if (!is.null(SV[[samp_type]]$data)){
+      SV_data = SV[[samp_type]]$data
+    }
+  }
+}
+
+```
+
+\newpage
+
+# `r paste("Summarise Mutational Landscape for", length(Gene_list$Hugo_Symbol), "Supplied Genes", sep=" ") `.
+
+This section will summarise the mutational landscape of a set of genes.  Where a gene has more than one mutation called the mutation calls are concatenated or represented as a multi-hit.  
+Two plots are presented:  
+
+1. **Single Nucleotide Variant Landscape** - This plot is designed to report either the maf annotations of nonsense, frameshift (insertions and deletions), missense mutations, in-frame (insertions and deletions), splice site and translation start site mutations or if flagged the vep annotations of stop gained, frameshift (insertions and deletions), missense mutations, in-frame (insertions and deletions), splice site mutations (acceptor, donor of region), start lost and stop lost.  
+2. **Full Variant Landscape** - This plot combines the results of the first plot with any copy number alteration or structural variant loss of function.  If the flags are set as only loss or only gain for Copy number changes then the report will represent cnLOH as a loss and only high gains will be reported.  If a gene has more than one mutation then this plot will only report the mutation of highest consequence.  
+
+\newpage
+
+```{r, prepare-data-for-summary-mapping-data-frames, results='asis'}
+if (!first_pass){
+  # prepare the data
+  if (!is.null(SNV_data)){
+    SNV_data = prepare.data(df=as.data.frame(SNV_data),
+                            type="SNV",
+                            mut.types=SNV_mutations,
+                            variant.class="Plot_Class")
+  }
+  if (!is.null(SV_data)){
+    SV_data = prepare.data(df=as.data.frame(SV_data),
+                           type="SV",
+                           mut.types=SV_mutations,
+                           variant.class="likely_consequence")
+    if (!is.null(SV_data)){
+      SV_data %<>% mutate(Reported_consequence= ifelse(grepl("Loss_of_Function", SV_data$likely_consequence),
+                                                       "Loss_of_Function",
+                                                       ifelse(grepl("Intragene_Fusion", SV_data$likely_consequence),
+                                                              "Intragene_Fusion",
+                                                              ifelse(grepl("Intra_intron", SV_data$likely_consequence),
+                                                                     "Intra_intron",
+                                                                     ifelse(grepl("Intergene_Fusion", SV_data$likely_consequence),
+                                                                            "Intergene_Fusion", "BadLuck")))))
+    }
+  }
+  if (!is.null(CNV_data)){
+    CNV_data = prepare.data(df=as.data.frame(CNV_data),
+                            type="CNV",
+                            mut.types=CNV_mutations,
+                            variant.class="Copy_Number_Variant")
+  }
+}
+
+```
+
+
+```{r, create-data-for-summary-mapping-data-frames, results='asis'}
+plot_types = c("full") # all sample subtypes
+if (length(all_samples)>=1){
+  att = unique(c("donorLabel", "UniqueLabel", "Donor_class", colnames(study_data)[which(colnames(study_data)%in% top_annots)]))
+  full_study_data = select(study_data, all_of(att))
+  if (sample_order){
+    sample_levels %<>% dplyr::filter(donorLabel %in% study_data$donorLabel) 
+    if (!samp_id %in% colnames(sample_levels)){
+      sample_levels %<>% dplyr::mutate(sampID = sapply(donorLabel, function(x) study_data[which(study_data$donorLabel==x), samp_id]))
+      colnames(sample_levels)[which(colnames(sample_levels)=="sampID")] = samp_id
+    }
+    full_study_data[,samp_id]= factor(full_study_data[,samp_id], levels=c(sample_levels[,samp_id]))
+    full_study_data = full_study_data[order(full_study_data[,samp_id]),]
+  } else {
+    full_study_data %<>% arrange(Donor_class, desc(Cellularity), desc(UniqueLabel))
+    # create an index to arrange samples by cellularity high to low within status by number of donors, 
+    full_study_data$index = vector(mode="integer", length=nrow(full_study_data))
+    donor_list = unique(study_data$donorLabel)
+    for (donor in donor_list){
+      full_study_data$index[c(grep(donor, full_study_data$UniqueLabel))] = length(grep(donor, full_study_data$UniqueLabel))
+    }
+    full_study_data %<>% arrange(Donor_class, desc(index))
+    full_study_data$donorLabel = factor(full_study_data$donorLabel, levels=unique(full_study_data$donorLabel))
+  }
+  donor_list = list()
+  plot_study_data = list()
+  for (plot in plot_types){
+    if (plot=="full"){
+      donor_list[[plot]] = full_study_data$UniqueLabel
+      plot_study_data[[plot]] = full_study_data
+    } 
+  }
+}
+
+
+```
+
+
+```{r, create-summary-mapping-data-frames, results='asis'}
+if (!first_pass){
+  # create mutational landscape data
+  if (!is.null(SNV_data)){
+    SNV_landscape=list()
+    SNV_Effects=list()
+    for (plot in plot_types){
+      SNV_mut_data = create.mut.landscape(type="SNV",
+                                          df.list=list(SNV = SNV_data),
+                                          donor.list=donor_list[[plot]],
+                                          study.data=plot_study_data[[plot]],
+                                          top.annos = top_annots)
+      SNV_landscape[[plot]] = SNV_mut_data$landscape
+      SNV_Effects[[plot]] = unlist(unique(SNV_mut_data$effects))
+    }
+  } else {
+    SNV_landscape = NULL
+  }
+  if (!is.null(CNV_data) || !is.null(SV_data)){
+    mut_landscape = list()
+    Variant_Effects = list()
+    for (plot in plot_types){
+      mut_data = create.mut.landscape(type="all",
+                                      df.list=list(SNV = SNV_data, SV = SV_data[grep("Loss_of_Function", SV_data$Reported_consequence),], CNV = CNV_data), 
+                                      donor.list=donor_list[[plot]],
+                                      study.data=plot_study_data[[plot]],
+                                      top.annos = top_annots)
+      mut_landscape[[plot]] = mut_data$landscape
+      Variant_Effects[[plot]] = unlist(unique(mut_data$effects))
+    }
+  } else {
+    mut_landscape = NULL
+  }
+  if (!is.null(top_genes)){
+    if (!is.null(SNV_data) || !is.null(CNV_data) || !is.null(SV_data)){
+      top_mut_data = list()
+      top_effects = list()
+      if (add_ctdna){
+        top_study_data = plot_study_data[[plot]]
+        top_cf_annots = top_annots
+      }
+      for (plot in plot_types){
+        top_data = create.mut.landscape(type="TOP",
+                                        df.list=list(SNV = SNV_data, SV = SV_data[grep("Loss_of_Function", SV_data$Reported_consequence),], CNV = CNV_data), 
+                                        donor.list=donor_list[[plot]],
+                                        study.data=top_study_data,
+                                        top.annos = top_cf_annots,
+                                        top.genes = top_genes,
+                                        add.ctdna = add_ctdna)
+        top_mut_data[[plot]] = top_data$landscape
+        top_effects[[plot]] = unlist(unique(top_data$effects))
+      }
+    } else {
+      top_genes = NULL
+    }
+  }
+}
+
+```
+
+```{r, create-summary-data-matrix-for-plotting}
+# ***************
+# create the data and parameters for plotting matrix
+# ***************
+figure_order = arrange(Genes_of_interest, desc(SNV)) 
+if (!first_pass){
+  # populate data for SNV plots
+  if (!is.null(SNV_landscape)){
+    if (specific_gene_order){
+      gene_order_file = SNV_gene_order_file
+      gene_order = as.data.frame(fread(file=gene_order_file))
+      gene_order = gene_order$GeneID
+    } else {
+      gene_order = figure_order$Hugo_Symbol # NULL
+    }
+    SNV_plots = list()
+    for (plot in plot_types){
+      SNV_plots[[plot]] = get.plot.data(type="SNV",
+                                        v.effects=SNV_Effects[[plot]],
+                                        v.df=as.data.frame(SNV_landscape[[plot]]),
+                                        v.filename="SNV_matrix",
+                                        data=SNV_data,
+                                        donor.list=donor_list[[plot]],
+                                        study.data = plot_study_data[[plot]],
+                                        plot.type = plot,
+                                        gene.order=gene_order)
+    }
+  } else {
+    SNV_plots = NULL
+  }
+  # populate data for summary plots i.e. a combination of SNV, CNV and SV data
+  if (!is.null(mut_landscape)){
+    data_summ = SNV_data
+    if (specific_gene_order){
+      gene_order_file = full_gene_order_file
+      gene_order = as.data.frame(fread(file=gene_order_file))
+      gene_order = gene_order$GeneID
+    } else {
+      gene_order = figure_order$Hugo_Symbol # NULL
+    }
+    summary_plots = list()
+    for (plot in plot_types){
+      summary_plots[[plot]] = get.plot.data(type="summary",
+                                            v.effects=Variant_Effects[[plot]],
+                                            v.df=as.data.frame(mut_landscape[[plot]]),
+                                            v.filename="Summary_matrix",
+                                            data=data_summ,
+                                            donor.list=donor_list[[plot]],
+                                            study.data = plot_study_data[[plot]],
+                                            plot.type = plot,
+                                            gene.order=gene_order)
+    }
+  } else {
+    summary_plots = NULL
+  }
+  # populate data for top genes plots
+  if (!is.null(top_genes)){
+    gene_order = NULL
+    if (add_ctdna) {
+      top_gene_list = data.frame(Hugo_Symbol = c(top_genes, paste0(top_genes, "_ct")),
+                                 SNV = sapply(rep(top_genes, 2), function(x) Genes_of_interest$SNV[which(Genes_of_interest$Hugo_Symbol==x)]),
+                                 CNV = sapply(rep(top_genes, 2), function(x) Genes_of_interest$CNV[which(Genes_of_interest$Hugo_Symbol==x)]),
+                                 SV = sapply(rep(top_genes, 2), function(x) Genes_of_interest$SV[which(Genes_of_interest$Hugo_Symbol==x)]),
+                                 Group = rep(top_genes, 2))
+      top_gene_list$Group = factor(top_gene_list$Group, levels=top_genes)
+      donor_list[[plot]] = donor_list[[plot]][which(donor_list[[plot]]%in%colnames(top_mut_data[[plot]]))]
+    } else {
+      top_gene_list = rbind(dplyr::select(Genes_of_interest, Hugo_Symbol, SNV, CNV, SV), 
+                            data.frame(Hugo_Symbol=c("TP53_LOH", "RB1_LOH"),
+                                       SNV = c(Genes_of_interest$SNV[which(Genes_of_interest$Hugo_Symbol=="TP53")], Genes_of_interest$SNV[which(Genes_of_interest$Hugo_Symbol=="RB1")]),
+                                       CNV = c(Genes_of_interest$CNV[which(Genes_of_interest$Hugo_Symbol=="TP53")], Genes_of_interest$CNV[which(Genes_of_interest$Hugo_Symbol=="RB1")]),
+                                       SV = c(Genes_of_interest$SV[which(Genes_of_interest$Hugo_Symbol=="TP53")], Genes_of_interest$SV[which(Genes_of_interest$Hugo_Symbol=="RB1")]))
+                            )
+    }
+    top_gene_list %<>% dplyr::arrange(desc(SNV))
+    gene_order = top_gene_list$Hugo_Symbol
+    TOP_plots = list()
+    for (plot in plot_types){
+      TOP_plots[[plot]] = get.plot.data(type="TOP",
+                                        v.effects=top_effects[[plot]],
+                                        v.df=as.data.frame(top_mut_data[[plot]]),
+                                        v.filename="TOP_matrix",
+                                        data=data_summ,
+                                        donor.list=donor_list[[plot]],
+                                        gene.list=top_gene_list,
+                                        study.data = top_study_data,
+                                        plot.type = plot,
+                                        gene.order=gene_order)
+    }
+  } else {
+    TOP_plots = NULL
+  }
+}
+```
+
+
+```{r, organise-colours-for-plots}
+# ***************
+# set up colours to be used in the plots and to populate values
+# ***************
+if (!first_pass){
+  if (!is.null(summary_plots)){
+    summary_all_colours = list()
+    summary_colours = list()
+    for (plot in plot_types){
+      summary_all_colours[[plot]] = get.plot.colours(plot.data = summary_plots[[plot]],
+                                                     gene.list = figure_order, 
+                                                     type="summary_all")
+    }
+  } else {
+    summary_colours = NULL
+    summary_all_colours = NULL
+  }
+  if (!is.null(SNV_plots)){
+    SNV_colours = list()
+    for (plot in plot_types){
+      SNV_colours[[plot]] = get.plot.colours(plot.data=SNV_plots[[plot]], 
+                                             gene.list = figure_order, 
+                                             type="SNV")
+    }
+  } else {
+    SNV_colours = NULL
+  }
+  if (!is.null(TOP_plots)){
+    TOP_colours = list()
+    for (plot in plot_types){
+      TOP_colours[[plot]] = get.plot.colours(plot.data=TOP_plots[[plot]], 
+                                             type="TOP")
+    }
+  } else {
+    TOP_colours = NULL
+  }
+}
+
+```
+
+
+```{r, functions-for-plot-matrices-and-legends}
+if (!first_pass){
+  # ***************
+  # set up the parameters for the plots
+  # ***************
+  plot_type = c("SNV", "summary_all", "TOP")
+  plot_data = list()
+  plot_mutations = list()
+  plot_titles = list()
+  plot_colours = list()
+  var_effects = list()
+  for (plot in plot_types){
+    plot_data[[plot]] = list(SNV_plots[[plot]]$Data, summary_plots[[plot]]$Data, TOP_plots[[plot]]$Data)
+    names(plot_data[[plot]]) = plot_type
+    plot_mutations[[plot]] = list(SNV_plots[[plot]]$NumMutations, summary_plots[[plot]]$NumMutations, TOP_plots[[plot]]$NumMutations)
+    names(plot_mutations[[plot]]) = plot_type
+    plot_titles[[plot]] = c("Single Nucleotide", "Full", "Top Genes")
+    names(plot_titles[[plot]]) = plot_type
+    plot_colours[[plot]] = list(SNV_colours[[plot]], summary_all_colours[[plot]], TOP_colours[[plot]])
+    names(plot_colours[[plot]]) = plot_type
+    var_effects[[plot]] = list(SNV_plots[[plot]]$Effects, summary_plots[[plot]]$Effects, TOP_plots[[plot]]$Effects)
+    names(var_effects[[plot]]) = plot_type
+  }
+}
+
+```
+
+\blandscape  
+
+## Single Nucleotide Variant Landscape for `r study_name `.  
+
+```{r, plot-SNV-matrix-1, fig.width=16, fig.height=16, fig.align='center', results='asis'}
+# single nucleotide variant plots
+ if (!first_pass & is.null(top_genes)){
+   for (plot_type in plot_types){
+    if (!is.null(var_effects[[plot_type]][["SNV"]])){
+      SNV_plot = create.matrix.plot(type="SNV",
+                                    plot.data=plot_data[[plot_type]],
+                                    plot.mut = plot_mutations[[plot_type]],
+                                    plot.colours=plot_colours[[plot_type]],
+                                    plot.titles=plot_titles[[plot_type]],
+                                    study.data = plot_study_data[[plot_type]],
+                                    gene.list = figure_order)
+      if (!is.null(SNV_plot$gene.plot) && !is.null(SNV_plot$anno.plot) && !is.null(SNV_plot$tmb.plot)){
+        grid.arrange(plot_grid(SNV_plot$tmb.plot, NULL, SNV_plot$anno.plot, NULL, SNV_plot$gene.plot, ncol = 1, align="v", rel_heights = SNV_plot$plot.heights))
+      } else if (!is.null(SNV_plot$gene.plot) && !is.null(SNV_plot$anno.plot)){
+        grid.arrange(plot_grid(SNV_plot$anno.plot, NULL, SNV_plot$gene.plot, ncol = 1, align="v", rel_heights = SNV_plot$plot.heights))
+      }
+      cat("\\pagebreak  ")
+    } else {
+      cat(paste("No Single Nucleotide Variants have been called", plot_types[num], "samples for the", study_name, "study.\n", sep=" ") 
+          )
+      cat("\\pagebreak  ")
+    }
+  }
+}
+
+```
+
+\elandscape  
+
+
+```{r, plot-SNV-legend-1, fig.width=9, fig.height=6, fig.keep='last', fig.align='center', results='asis'}
+# single nucleotide variant legends
+if (!first_pass & is.null(top_genes)){
+  for (plot_type in plot_types){
+    if (!is.null(var_effects[[plot_type]][["SNV"]])){
+      create.legend(type="SNV",
+                    plot.colours=plot_colours[[plot_type]],
+                    var.effects=var_effects[[plot_type]])
+      cat("\\pagebreak  ")
+    } 
+  }
+}
+
+```
+
+
+\blandscape  
+
+## Full Variant Landscape for `r study_name `.  
+
+```{r, plot-summary_all-matrix-1, fig.width=12, fig.height=12, fig.align='center', results='asis'}
+# summary variant plots including SNV, CNV and SV
+if (!first_pass & is.null(top_genes)){
+  for (plot_type in plot_types){
+    if (!is.null(var_effects[[plot_type]][["summary_all"]])){
+      summary_all_plot = create.matrix.plot(type="summary_all",
+                                            plot.data=plot_data[[plot_type]],
+                                            plot.mut=plot_mutations[[plot_type]],
+                                            plot.colours=plot_colours[[plot_type]],
+                                            plot.titles=plot_titles[[plot_type]],
+                                            study.data = plot_study_data[[plot_type]],
+                                            gene.list=Genes_of_interest)
+      if (!is.null(summary_all_plot$gene.plot) && !is.null(summary_all_plot$anno.plot) && !is.null(summary_all_plot$tmb.plot)){
+        grid.arrange(plot_grid(summary_all_plot$tmb.plot, NULL, summary_all_plot$anno, NULL, summary_all_plot$gene.plot, ncol = 1, align="v", rel_heights = summary_all_plot$plot.heights))
+      } else if (!is.null(summary_all_plot$gene.plot) && !is.null(summary_all_plot$anno.plot)){
+        if (class(summary_all_plot$gene.plot)=="list") {
+          # *************************
+          # Fig S5 a (with no top_genes and add_ctDNA=FALSE)
+          # *************************
+          grid.arrange(plot_grid(summary_all_plot$anno.plot, NULL,
+                                 summary_all_plot$gene.plot$Cell_Cycle_Regulation, NULL,
+                                 summary_all_plot$gene.plot$Transcriptional_Regulation, NULL,
+                                 summary_all_plot$gene.plot$Receptor_Kinase_P13K_signalling, NULL,
+                                 summary_all_plot$gene.plot$Notch_signalling_NE_differentiation, NULL,
+                                 summary_all_plot$gene.plot$Other, NULL, ncol = 1, align="v", rel_heights = summary_all_plot$plot.heights),
+                       plot_grid(NULL, NULL,
+                                 summary_all_plot$gene.hist$Cell_Cycle_Regulation, NULL,
+                                 summary_all_plot$gene.hist$Transcriptional_Regulation, NULL,
+                                 summary_all_plot$gene.hist$Receptor_Kinase_P13K_signalling, NULL,
+                                 summary_all_plot$gene.hist$Notch_signalling_NE_differentiation, NULL,
+                                 summary_all_plot$gene.hist$Other, NULL, ncol = 1, align="v", rel_heights = c(summary_all_plot$plot.heights[1:10], summary_all_plot$plot.heights[11]-4.8, summary_all_plot$plot.heights[12]+4.8)), layout_matrix=rbind(c(1,1,1,1,1,1,1,1,1,2)))
+        } else {
+          grid.arrange(plot_grid(summary_all_plot$anno.plot, NULL, summary_all_plot$gene.plot, NULL, ncol = 1, align="v", rel_heights = summary_all_plot$plot.heights))
+        }
+      }
+      cat("\\pagebreak  ")
+    } else {
+      cat(paste("No Summary available for", plot_types[num], "samples for the", study_name, "study.\n", sep=" ") 
+          )
+      cat("\\pagebreak")
+    }
+  }
+}
+
+```
+
+\elandscape  
+
+```{r, plot-summary_all-legend-1, fig.width=9, fig.height=6, fig.keep='last', fig.align='center', results='asis'}
+# summary variant legend for combined SNV, CNV and SV
+ if (!first_pass & is.null(top_genes)){
+   for (plot_type in plot_types) {
+    if (!is.null(var_effects[[plot_type]][["summary_all"]])){
+      # *************************
+      # Legend S5 a
+      # *************************
+      create.legend(type="summary_all",
+                    plot.colours=plot_colours[[plot_type]],
+                    var.effects=var_effects[[plot_type]])
+      cat("\\pagebreak  ")
+    } 
+  }
+}
+
+```
+
+\blandscape  
+
+
+```{r, plot-summary_top-matrix-1, fig.width=12, fig.height=7, fig.align='center', results='asis'}
+# top genes variant plots
+if (!first_pass & !is.null(top_genes)){
+  for(plot_type in plot_types){
+    if (!is.null(var_effects[[plot_type]][["TOP"]])){
+      top_plot = create.matrix.plot(type="TOP",
+                                    plot.data=plot_data[[plot_type]],
+                                    plot.colours=plot_colours[[plot_type]],
+                                    plot.titles=plot_titles[[plot_type]],
+                                    study.data = top_study_data[which(top_study_data$UniqueLabel%in%unique(plot_data[[plot_type]]$TOP$DonorID)),],
+                                    top.annots = top_cf_annots,
+                                    gene.list = top_gene_list)
+      if (!is.null(top_plot$gene.plot) && !is.null(top_plot$anno.plot) && !is.null(top_plot$tmb.plot)){
+        grid.arrange(plot_grid(top_plot$tmb.plot, NULL, top_plot$anno, NULL, top_plot$gene.plot, ncol = 1, align="v", rel_heights = top_plot$plot.heights))
+      } else if (!is.null(top_plot$gene.plot) && !is.null(top_plot$anno.plot)){
+        if (class(top_plot$gene.plot)[1]=="list") {
+          # *************************
+          # Fig S8 (with top_genes and add_ctDNA=FALSE)
+          # Fig S9 (with top_genes and add_ctDNA=TRUE)
+          # *************************
+          grid.arrange(plot_grid(top_plot$anno.plot, NULL,
+                                 top_plot$gene.plot$TP53, NULL,
+                                 top_plot$gene.plot$RB1, NULL, ncol = 1, align="v", rel_heights = top_plot$plot.heights), ncol=1)
+        } else {
+          grid.arrange(plot_grid(top_plot$anno.plot, NULL, top_plot$gene.plot, ncol = 1, align="v", rel_heights = top_plot$plot.heights))
+          # ggsave2(filename = paste0(study_prefix, "_Summary_Top_Mutations_w_", ifelse(add_ctdna, "ctDNA_67Samples", "CN_LOH"), "_FINAL.pdf"),
+          #     plot = grid.arrange(plot_grid(top_plot$anno.plot, NULL, top_plot$gene.plot, ncol = 1, align="v", rel_heights = top_plot$plot.heights)),
+          #     device="pdf",
+          #     path=paste0(results_dir, "Plots/Paper_Figures/"),
+          #     width=12, height=7, units="in")
+        }
+      }
+      cat("\\pagebreak  ")
+      
+    } else {
+      cat(paste("No Summary available for", plot_types[num], "samples for the", study_name, "study.\n", sep=" ") 
+          )
+      cat("\\pagebreak")
+    }
+  }
+}
+
+
+```
+
+\elandscape  
+
+```{r, plot-top-legend-1, fig.width=9, fig.height=6, fig.keep='last', fig.align='center', results='asis'}
+# top genes variant legends
+if (!first_pass & !is.null(top_genes)){
+  for (plot_type in plot_types){
+    if (!is.null(var_effects[[plot_type]][["TOP"]])){
+      # *************************
+      # Legends S8 & S9
+      # *************************
+      create.legend(type="TOP",
+                    plot.colours=plot_colours[[plot_type]],
+                    var.effects=var_effects[[plot_type]])
+      cat("\\pagebreak  ")
+    }
+  } 
+}
+
+```
+
+
+```{r plot-genomic-information-by-cluster, fig.show='asis', fig.keep = 'all', fig.width=15, fig.height=10}
+telomere_info = as.data.frame(fread(file=paste0(working_dir, "Spreadsheets/Fielding_-_Lung_Small_cell_Lung_cancer_qmotif.tsv")))
+genomic_info = data.frame(DonorLabel = study_data$donorLabel,
+                          Meth_Cluster = gsub("T", "Group", study_data$Meth_Cluster),
+                          Ploidy = study_data$ascatPloidyScore,
+                          TMB = study_data$TMB_nonSyn,
+                          Log2_Telomere_Ratio = sapply(study_data$donorLabel, function(x) telomere_info$log2.telomere.ratio[which(telomere_info$donorLabel==x)]),
+                          Total_Num_SV = sapply(study_data$donorLabel, function(x) SV$WGS$stats$SV_num[grep(x, SV$WGS$stats$UniqueLabel)])
+                          ) 
+genomic_info$Meth_Cluster = factor(genomic_info$Meth_Cluster, levels=c("Group1", "Group2", "Group3", "Group4"))
+groups = c("Methylation Sub-Groups")
+genomic_tests = c("TMB", "Total_Num_SV", "Ploidy", "Log2_Telomere_Ratio")
+gene_clust_col = c(`Group1`="#49b05c", `Group2`="#5108b4", `Group3`="#f58919", `Group4`="#d9c80d")
+gene_clust_fill = c(`Group1`="#b9e4c1", `Group2`="#d3c3ef", `Group3`="#f8d9b0", `Group4`="#edeac4")
+sep_plots = list()
+for (gt in genomic_tests){
+  gp_levels = unique(study_data$Meth_Cluster)[order(unique(study_data$Meth_Cluster))]
+  genomic_info %<>% dplyr::mutate(Y_var = genomic_info[,gt])
+  p = ggplot(data=genomic_info, aes(x=Meth_Cluster, y=Y_var)) + geom_boxplot(aes(fill=Meth_Cluster, color=Meth_Cluster))  +  
+    # geom_violin(width=0.9, aes(fill=Meth_Cluster, color=Meth_Cluster)) + stat_summary(fun=mean, geom="point", size=2, color=gene_clust_col[2:5]) + # mult=0.5, 
+    scale_fill_manual(values = gene_clust_fill) + scale_color_manual(values = gene_clust_col) + ylim(min(genomic_info$Y_var), max(genomic_info$Y_var)+0.1*max(genomic_info$Y_var)) + 
+      labs(title=paste(gsub("_", " ", gsub("Num", "#", gt)), "by Sub-Groups"), y=paste(gsub("_", " ", gsub("Num", "#", gt))), x=gsub("_", " ", groups)) + 
+      theme(panel.background=element_rect(fill='transparent'),
+            axis.line = element_line(color="black"),
+            panel.grid.major.y = element_line(color="#dddddd", linewidth=0.25),
+            # axis.text.x.bottom = element_text(hjust=1, size=12), #, angle=90
+            axis.text = element_text(size=12),
+            axis.title = element_text(size=18),
+            plot.title = element_text(size=18),
+            legend.position = "none") +
+      stat_compare_means(aes(group=Meth_Cluster), method=ifelse(length(gp_levels)>2, "kruskal.test", "wilcox.test"), label="p.format", label.x.npc = "center") +  # other methods = t.test & anova for parametric test
+      stat_compare_means(aes(group=Meth_Cluster), method=ifelse(length(gp_levels)>2, "kruskal.test", "wilcox.test"), label="p.signif", label.x.npc = 0.9)
+  sep_plots[[gt]] = ggplotGrob(p)   
+}
+gg_gt_plots = list(sep_plots$Total_Num_SV, sep_plots$Ploidy, sep_plots$Log2_Telomere_Ratio, sep_plots$TMB)
+gt_grob = arrangeGrob(grobs=gg_gt_plots, layout_matrix=rbind(c(1, 2, 3),
+                                                              c(4, NA, NA)))
+
+
+# *************************
+# Fig S5 b, c, d & g
+# *************************
+grid.arrange(gt_grob)
+
+```
+
+

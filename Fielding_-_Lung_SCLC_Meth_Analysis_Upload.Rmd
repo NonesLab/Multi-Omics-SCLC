@@ -1,0 +1,2223 @@
+---
+title: |
+  | \vspace*{3cm} Fielding Lung WGS - SCLC Lung Cancer
+  | DNA Methylation Analysis 
+  |  \vspace{2cm}
+subtitle: |
+  | \vspace*{1cm} SCLC WGS Methylation and 
+  | Association to Genes of Interest
+  |  \vspace{3cm}
+author: |
+  | Vanessa Lakis \vspace{3cm} 
+date: |
+  | `r format(Sys.time(), "%d %B, %Y")` \newpage 
+output: 
+  pdf_document:
+    latex_engine: xelatex
+    number_sections: yes
+    toc: yes
+    toc_depth: 4
+    fig_caption: yes
+    keep_tex: yes
+  html_document:
+    toc: true
+highlight: zenburn
+  
+header-includes:
+  - \usepackage{fancyhdr}
+  - \usepackage{xcolor, hyperref}
+  - \usepackage{lmodern}
+  - \usepackage{courier}
+  - \renewcommand*\familydefault{\sfdefault}
+  - \usepackage{pdflscape}  
+  - \newcommand{\blandscape}{\begin{landscape}} 
+  - \newcommand{\elandscape}{\end{landscape}}
+  - \setlength{\headheight}{36.5pt}
+  - \setlength{\footskip}{28pt}
+  - \pagestyle{fancy}
+  - \renewcommand{\headrulewidth}{0.5pt}
+  - \renewcommand{\footrulewidth}{0.5pt}
+  - \cfoot{\thepage}
+  - \rhead{\scriptsize The University of Queensland \\ 280-284 Sir Fred Schonell Dr, St Lucia, QLD 4067 Australia\\T +61 (7) 3365 1111 | W \url{www.uq.edu.au}}
+  - \hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue}
+  - \fancypagestyle{plain}{\pagestyle{fancy}}
+  - \usepackage{float}
+---
+
+```{r global-options, include=FALSE}
+# **********
+# load packages required - sets out the document rendering defaults and loads the R packages that are required for analysis
+# **********
+library(knitr)
+knitr::opts_chunk$set(dpi=100, echo=FALSE, warning=FALSE, message=FALSE, 
+                      fig.show='asis', fig.keep='all', fig.width=7, fig.height=4, fig.pos="H", fig.align='center') 
+# to remove message from xtable
+library(xtable)
+options(xtable.comment=FALSE)
+ 
+loadpak = function(pkg){
+  sapply(pkg, require, character.only=TRUE)
+}
+# acquire library for the analysis
+packages = c("dplyr", "data.table", "ggplot2", "ggfortify", "gtable", "sva", "scales", "ChAMP", "fpc", "cowplot",
+             "gridExtra", "RColorBrewer", "RPMM", "reshape2", "pheatmap", "lumi", "circlize", "readr", "readxl",
+             "stringi", "dendextend", "preprocessCore", "ComplexHeatmap", "ReactomePA", "magrittr", "ggpubr", "psych", "xlsx") 
+loadpak(packages)
+# packages used for the pathway analysis
+packages = c("AnnotationDbi", "org.Hs.eg.db", "clusterProfiler", "DOSE", "msigdbr", "fgsea", "enrichplot", "pathview")
+loadpak(packages)
+
+```
+
+
+```{r study-options, include=FALSE, results='asis'}
+# **********
+# import functions for script
+# *********
+#
+#   **********************  nominate study directory ***************************
+#
+study_dir = ""
+source(paste0(study_dir, "Methylation/WGS_SCLC_Analysis/Fielding_-_Lung_SCLC_Meth_Functions_Uplaod.R"))
+
+# **********
+# import variable declarations for script
+# *********
+source(paste0(study_dir, "Methylation/WGS_SCLC_Analysis/Fielding_-_Lung_SCLC_Meth_Declarations_Upload.R"))
+```  
+
+
+```{r read-in-rdata-files}
+# **********
+# loads in the data imported and normalised from idat files.  If you wish to used results from previous analysis then make first_run=FALSE and normalise=FALSE
+# **********
+if (!first_run) {
+  RData_datafile = paste0(study_prefix, "_", gsub("/Differential_stats", "", analysis), ifelse(nchar(sub_analysis)>12, paste0("_", sub_analysis), "" ), "_Raw.RData")
+  if (RData_datafile %in% dir(RData_results_dir)) {
+    load(paste0(RData_results_dir, RData_datafile))
+  } else {
+    first_run = TRUE
+  }
+}
+if (!normalise) {
+  RData_normfile = paste0(study_prefix, "_", gsub("/Differential_stats", "", analysis), ifelse(nchar(sub_analysis)>12, paste0("_", sub_analysis), "" ), "_Norm.RData")
+  if (RData_normfile %in% dir(RData_results_dir)) {
+    load(paste0(RData_results_dir, RData_normfile))
+  } else {
+    normalise = TRUE
+  }
+}
+
+```
+
+
+```{r annotate-illumina-reference-probes}
+# **********
+# Annotate reference files with SNPs and multimappers defined by McCartney et al 2016, Zhou et al 2017, Nordlund et al 2013
+# **********
+if (array_type=="EPIC"){
+  # **********
+  # Get the lists of SNP and multi mapper data for the EPIC array
+  # **********
+  EPIC.manifest.hg19 = fread(EPIC_hg19_file, na.strings="")
+  Zhou_SNP = data.frame(IlmnID = as.character(EPIC.manifest.hg19$probeID[which(EPIC.manifest.hg19$MASK_general==TRUE)]))
+  data(multi.hit)
+  Nordlunds_multi = data.frame(IlmnID = as.character(multi.hit$TargetID))
+  # Nordlunds_multi = as.data.frame(fread(Nordlunds_file))
+  McCartney_SNP = fread(SNP_list)
+  McCartney_other = fread(rs_ch_list)
+  McCartney_multi = fread(Multimapper_list)
+}
+
+```
+  
+
+```{r set-up-data-with-ChAMP-import-and-filter, include=FALSE}
+# **********
+# Imports the raw idat files using ChAMP and the initial filter including the detected p-values and the beadcount.
+# **********
+if (first_run){
+  # *************
+  # Import and Filter methylation data
+  # *************
+  import_messages = ""
+  meth_import = champ.import(directory=methylation_directory,
+                             arraytype=array_type)
+  samp_imp_messages = utils::capture.output(champ.import(directory=methylation_directory,
+                                                         arraytype=array_type), type="message")
+  # capture import filter messages (ie pval, beads).  Keep non-CpG as probes are known signal???????
+  import_messages = utils::capture.output(filter.data(import.data=meth_import,
+                                                      filter.type="message",
+                                                      first.filter=TRUE,
+                                                      array.type=array_type),
+                                          append=TRUE,
+                                          type="message")
+  # filter import before normalise ie only probes and samples that fail QC
+  meth_filter = filter.data(import.data=meth_import,
+                            filter.type="filter",
+                            first.filter=TRUE,
+                            array.type=array_type)
+  meth_import = list(beta = meth_filter$beta,
+                     M = meth_filter$M,
+                     intensity = meth_filter$intensity,
+                     detP = meth_import$detP[which(rownames(meth_import$detP)%in%rownames(meth_filter$beta)),],
+                     beadcount = meth_import$beadcount[which(rownames(meth_import$beadcount)%in%rownames(meth_filter$beta)),],
+                     Meth = meth_filter$Meth,
+                     UnMeth = meth_filter$UnMeth,
+                     pd = meth_filter$pd)
+  # capture the second filter messages (ie filtering out the non-CpG, SNPs, multi-mappers and XY chromosome)
+  filter_messages = ""
+  filter_messages = utils::capture.output(filter.data(import.data=meth_import,
+                                                      filter.type="message",
+                                                      first.filter=FALSE,
+                                                      array.type=array_type),
+                                          append=TRUE,
+                                          type="message")
+}
+
+```
+
+\newpage  
+
+# Summary of the SCLC WGS Methylation.
+
+## Importing from idat Files.  
+Prior to initial look at the quality of the raw data, it was filtered to remove all probes with a detected p-value > 0.01 and with fewer than 3 beads in at least 5% of samples. Samples were removed if > 10% of their probes failed. 
+
+
+### Quality Control of Raw Data.  
+
+```{r set-up-sample-info, results='asis'}
+# **********
+# Set up sample_info with the sentrix id (combined slide and array) 
+# **********
+new_samp_info = as.data.frame(fread(file=paste0(working_dir, "Sample_Sheets/Fielding_-_Lung_WGS_SCLC_with_MethClust_82SampleSheet_v14.csv")))
+rownames(new_samp_info) = new_samp_info$Sample_Name
+meth_import$pd = new_samp_info[colnames(meth_import$beta),]
+sample_info_levels = set.sample.info.levels(pd= as.data.frame(meth_import$pd),
+                                            samp.vars = sample_sheet_cat_all,
+                                            variables = sample_categories, 
+                                            var.levs = sample_levels)
+sample_info = sample_info_levels$sample.info
+sample_levels = sample_info_levels$var.levels
+# assigns category colours 
+colour_cat = list()
+colour_cat_border = list()
+for (cat in sample_categories){
+  colour_cat[[cat]] = c(sample_colours[[cat]][sample_levels[[cat]][which(sample_levels[[cat]]%in%as.character(sample_info[,cat]))]])
+  colour_cat_border[[cat]] = c(sample_border_colours[[cat]][sample_levels[[cat]][which(sample_levels[[cat]]%in%as.character(sample_info[,cat]))]])
+  sample_levels[[cat]] = sample_levels[[cat]][which(sample_levels[[cat]]%in%as.character(sample_info[,cat]))]
+  names(colour_cat_border[[cat]]) = names(colour_cat[[cat]]) = sample_levels[[cat]]
+}
+
+```
+
+
+```{r run-QC-before-normalisation, fig.height=5, fig.width=7, results='asis'}
+# **********
+# Apply QC on the imported data that has been filtered for possible technically faulty probes and samples 
+# **********
+QC()
+
+```
+
+
+```{r save-imported-data}
+# **********
+# Save the imported data so the above import and filter need not be processed and re-used in future runs
+# **********
+if (first_run){
+  save(meth_import, import_messages, samp_imp_messages, filter_messages, file=paste0(RData_results_dir, study_prefix, "_", gsub("/Differential_stats", "", analysis), ifelse(nchar(sub_analysis)>12, paste0("_", sub_analysis), "" ), "_Raw.RData"))
+}
+
+```
+
+\newpage  
+
+## Normalisation and Filtering of Imported Data.  
+
+All probes that are not intended for the analysis are filtered from the data and then the data is normalised using a `r paste(normalisation_methods, collapse=" nomalisation followed by a ") ` normalisation.  
+
+```{r filter-the-data}
+# **********
+# Filters are applied for probes that are non CpG, SNPs, Multi-mappers and on the XY chromosome.
+# **********
+meth_filter = filter.data(import.data=meth_import,
+                          filter.type="filter",
+                          first.filter=FALSE,
+                          array.type=array_type)
+```
+
+
+```{r normalise-data-and-report, include=FALSE}
+# **********
+# Normalisation methods of choice are applied to the beta values for future analyses
+# **********
+if (normalise) {
+  norm_data = meth_filter$beta 
+  norm_list = list()
+  for (norm_method in normalisation_methods){
+    meth_norm = normalise.data(dat=norm_data,
+                               rgSet=rgSet,
+                               norm.method=norm_method,
+                               array.type=array_type,
+                               seed=seed)
+    if (norm_method == "QN"){
+      colnames(meth_norm) = colnames(norm_data)
+      rownames(meth_norm) = rownames(norm_data)
+    }
+    norm_list[[norm_method]] = meth_norm
+    norm_data = meth_norm
+  }
+} else {
+  meth_norm = norm_list[[length(norm_list)]]
+}
+
+```
+
+
+```{r create-filtered-normalised-data}
+meth_norm = meth_norm[which(rownames(meth_norm) %in% rownames(meth_filter$beta)),]
+meth_M_norm = beta2m(meth_norm) 
+for (i in 1:nrow(meth_M_norm)){
+  meth_M_norm[i,][which(meth_M_norm[i,]==0)]=0.0000001
+}
+
+```
+
+\newpage  
+
+### Quality Control of Normalised Data.  
+
+The quality of the data presented is after filtering, normalisation and looks for the possibility of a batch effect associated with the different batches of samples processed at different time points. A singular value decompostition analysis is run to determine if there are any confounding variables or batch effects that require removing.  
+
+```{r run-qc-on-normalised-data, results='asis', fig.width=10, fig.height=8}
+# **********
+# Run QC on Normalised beta values
+# **********
+num_norm_meth = 0
+for (norm_method in normalisation_methods){
+  num_norm_meth = num_norm_meth+1
+  QC(raw=FALSE,
+     beta=norm_list[[norm_method]],
+     Group=sample_info$Sample_Group,
+     mdsPlot=FALSE,
+     densityPlot=TRUE,
+     dendrogram=FALSE,
+     PDFplot=FALSE,
+     norm.method=num_norm_meth)
+  cat(paste("\n","\n  "))
+}
+
+```
+
+\newpage  
+
+### Summary after Filtering Data.    
+Methylation data imported from idat files resulted in **`r format.number(nrow(meth_import$beta)) `** probes for **`r format.number(ncol(meth_import$beta)) `** samples.  
+The data was then filtered on:  
+A. Samples with > 10 % failed probes - resulting in `r get.probe.info(message.file=import_messages, message.type="meth_samp", array.type=array_type)$Message `  
+
+B. All probes with:  
+  1. A detection p-values > 0.01 - `r get.probe.info(message.file=import_messages, message.type="meth_pvalue", array.type=array_type)$Message `    
+  2. Fewer than 3 beads in at least 5% of samples - `r get.probe.info(message.file=import_messages, message.type="meth_bead", array.type=array_type)$Message `    
+  3. Non-CpG - `r get.probe.info(message.file=filter_messages, message.type="meth_CpG", array.type=array_type)$Message  `    
+  4. X and Y chromosome location - `r get.probe.info(message.file=filter_messages, message.type="meth_XY", array.type=array_type)$Message `    
+  5. SNP-relation (i.e. population polymorphisms) based on Zhou et al and McCartney et al - `r get.probe.info(message.file=filter_messages, message.type="meth_SNP", array.type=array_type)$Message `  
+  6. Mapping to multiple regions of the genomes based on Zhou et al and McCartney et al - `r get.probe.info(message.file=filter_messages, message.type="meth_multi", array.type=array_type)$Message `  
+
+
+```{r create-import-filter-summary-table, fig.height = 2.5, fig.width = 7, results='asis' }
+# **********
+# Sumamrises and tables the filtering process
+# *********
+summary_filter = data.frame(Filter=c("Detected p-values > 0.01",
+                                     "< 3 beads >= 5% of samples per probe",
+                                     "All non CpG probes",
+                                     "XY chromosome probes",
+                                     "SNP-related probes",
+                                     "Multi-mapping probes"),
+                            Probes_Removed=c(get.probe.info(message.file=import_messages,
+                                                           message.type="meth_pvalue",
+                                                           array.type=array_type)$Number,
+                                            get.probe.info(message.file=import_messages,
+                                                           message.type="meth_bead",
+                                                           array.type=array_type)$Number,
+                                            get.probe.info(message.file=filter_messages,
+                                                           message.type="meth_CpG",
+                                                           array.type=array_type)$Number,
+                                            get.probe.info(message.file=filter_messages,
+                                                           message.type="meth_XY",
+                                                           array.type=array_type)$Number,
+                                            get.probe.info(message.file=filter_messages,
+                                                           message.type="meth_SNP",
+                                                           array.type=array_type)$Number,
+                                            get.probe.info(message.file=filter_messages,
+                                                           message.type="meth_multi",
+                                                           array.type=array_type)$Number),
+                            Total_Removed=rep(NA, 6),
+                            stringsAsFactors=FALSE)
+summary_filter$Total_Removed = cumsum(summary_filter$Probes_Removed)
+for (i in 1:nrow(summary_filter)){
+  summary_filter$Total_Removed[i] = format.number(summary_filter$Total_Removed[i])
+  summary_filter$Probes_Removed[i] = format.number(summary_filter$Probes_Removed[i])
+}
+colnames(summary_filter) = gsub("_", " ", colnames(summary_filter))
+tt1 = ttheme_default()
+tt1$colhead$fg_params$col = "white"
+table_col = c("#123456", "#bcd6f1", "#d1e3f5")
+tt1$colhead$bg_params$fill = table_col[1]
+tt1$core$bg_params$fill = table_col[2:3]
+tt1$core$fg_params$fontsize = 10
+tt1$colhead$fg_params$fontsize = 10
+title = textGrob("Summary of Probes Filtered from Data for the Analysis.", gp=gpar(fontsize=12))
+padding = unit(5, "mm")
+summary_filter = gtable_add_rows(tableGrob(summary_filter,
+                                            theme=tt1, row=NULL),
+                                  heights = grobHeight(title) + padding,
+                                  pos = 0)
+summary_filter = gtable_add_grob(
+  summary_filter,
+  title,
+  1, 1, 1, ncol(summary_filter)
+)
+grid.arrange(summary_filter)
+
+```
+
+The data for the **`r study_name `** filtered on the above criteria, resulted in **`r format.number(nrow(meth_filter$beta)) `** probes for **`r format.number(ncol(meth_filter$beta)) `** samples.  Samples consist of **`r format.number(length(which(meth_filter$pd$Sample_Group==sample_levels[["Sample_Group"]][1]))) `** `r sample_levels[["Sample_Group"]][1] ` samples and **`r format.number(length(which(meth_filter$pd$Sample_Group==sample_levels[["Sample_Group"]][2]))) `** `r sample_levels[["Sample_Group"]][2] ` samples. 
+
+
+\newpage  
+
+## Evaluation of Normalised & Filtered Data.  
+A singular value decompostition analysis is run to determine if there are any confounding variables or batch effects that require removing.  
+
+```{r evaluate-normalised-data, fig.width=8, fig.height=7, results='asis' }
+# **********
+# SVD on normalised data to visualise any batch effects and mark them for possible removal.  
+# If the variable names stored in batch_var are in possible_covariates, declared in study-options a batch removal is noted
+# ********* norm_list$BMIQ
+if (length(which(meth_norm==0))>0){
+  for (i in 1:nrow(meth_norm)){
+  meth_norm[i,][which(meth_norm[i,]==0)]=0.0000001
+  }
+}
+# simplify and order sample information for the paper
+col_order = c("Sample_Name", "Sample_Group", "Slide", "Array", "SentrixID", "Batch_Num") 
+meth_norm_SVD = SVD(beta=meth_M_norm,
+                    pd=sample_info[,col_order],
+                    resultsDir=results_dir)
+```
+
+\newpage  
+
+### Evaluation of Normalised Filtered Data for Batch Effect.  
+If a batch effect was determined then this is removed using R package ComBat and a singular value decompostition analysis is re-run to determine if the confounding variables or batch effects has been removed.  
+
+
+```{r remove-batch-effect-data-if-there, fig.width=8, fig.height=7, results='asis'}
+# **********
+# If the variable names stored in batch_var are in possible_covariates, declared in study-options a batch removal is noted
+# ********* 
+batch_var = names(which(sapply(apply(meth_norm_SVD[1:4,], 2, function(x) which(x<0.001)), function(x) length(x)) > 0))
+batch_cor = NULL
+for (batch in batch_var){
+  if (batch %in% possible_covariates){
+    batch_cor = c(batch_cor, batch)
+  }
+}
+if (length(batch_cor) > 0){
+  meth_norm_combat = runCombat(beta=meth_norm,
+                               pd=sample_info,
+                               batchname=batch_cor)
+} else {
+  meth_norm_combat = NULL
+}
+
+```
+
+
+```{r run-SVD-again-if-batch-correction-required, fig.width=8, fig.height=7, results='asis'}
+# **********
+# Corrects for any batch effect and re-runs SVD for visual conformation. Convert the finalised normalised beta values to a matrix of M values
+# *********
+# if batch effects were to be corrected run SVD again to see if they have been removed
+if (length(batch_cor) > 0|| !is.null(meth_norm_combat)){
+  meth_norm_SVD = SVD(beta=meth_norm_combat, pd=sample_info,  batch=TRUE)
+  meth_norm = meth_norm_combat
+  # convert normalised beta values into M values
+  meth_M_norm = beta2m(meth_norm)
+  for (i in 1:nrow(meth_M_norm)){
+    meth_M_norm[i,][which(meth_M_norm[i,]==0)]=0.0000001
+  }
+} else {
+  cat("No batch effect was found or removed.  \n\n")
+}
+
+```
+
+
+```{r save-normalisation-data}
+# **********
+# Save normalisation result to RData file 
+# **********
+if (normalise){
+  save(norm_list, file=paste0(RData_results_dir, study_prefix, "_", gsub("/Differential_stats", "", analysis), ifelse(nchar(sub_analysis)>12, paste0("_", sub_analysis), "" ), "_Norm.RData"))
+}
+
+```
+
+
+
+\newpage  
+
+# Predictive Immune Signature for `r study_name `.  
+
+```{r use-methylcibersort-prediction-of-cell-composition, fig.show='asis', fig.keep = 'all', fig.width=8, fig.height=8}
+# **********
+# Code to create the data sets for deconvolution in CIBERSORT
+# **********
+# library("MethylCIBERSORT")
+# data("StromalMatrix_V2")
+# data("Legacy_Signatures")
+# data_types = study_prefix
+# meth_data_mats = list(meth_norm)
+# names(meth_data_mats) = data_types
+# Sig_types = c("ImmunoCell_Sig")
+# RDM_dir = <name of research directory to save files>
+# RNASeq_TMM = as.data.frame(fread(file = <TMM normalised RNASEq data>)))
+# CIBER_results = paste0(RDM_dir, "CIBERSORT_Results/")
+# system(paste0("mkdir -p ", CIBER_results))
+# sig_dir = paste0(CIBER_results, "Signatures/")
+# system(paste0("mkdir -p ", sig_dir))
+# exp_dir = paste0(CIBER_results, "Export_Matrices/")
+# system(paste0("mkdir -p ", exp_dir))
+# ran different analyses with - which(Stromal_v2.pheno%in%c("CD8", "Treg", "Eos", "Neu", "CD14"))
+# immuno_cells = c(1:length(Stromal_v2.pheno)) 
+# for (data_type in data_types){
+#   meth.data = meth_data_mats[[data_type]]
+#   meth.data = meth.data[,which(colnames(meth.data)%in%gsub("_T", "", colnames(RNASeq_TMM)))]
+#   for (sig_type in Sig_types){
+#     sig_name = paste0(sig_dir, data_type, "_", sig_type, "_allCells_48cohort")
+#     exp_name = paste0(exp_dir, data_type, "_", sig_type, "_Export_allCells_48cohort")
+#     if (sig_type=="Cancer_Sig"){
+#       Int = intersect(rownames(meth.data), Signatures$oesophagus_Signature.txt$NAME)
+#       methyl_mat = meth.data[match(Int, rownames(meth.data)),]
+#       Sig_mat = Signatures$oesophagus_Signature.txt[match(Int, Signatures$oesophagus_Signature.txt$NAME),]
+#       message("     The dimensions of the signature file are ", dim(Sig_mat)[1], " rows and ", dim(Sig_mat)[2], " columns.")
+#       write.csv(Sig_mat, paste0(sig_name, "_Signature.txt"), row.names=FALSE)
+#     } else if (sig_type=="ImmunoCell_Sig"){
+#       Int = intersect(rownames(meth.data), rownames(Stromal_v2))
+#       Stromal_v2 = Stromal_v2[, immuno_cells]
+#       message("     The dimensions of the Stromal reference are ", dim(Stromal_v2)[1], " rows and ", dim(Stromal_v2)[2], " columns.")
+#       Stromal_mat = Stromal_v2[match(Int, rownames(Stromal_v2)),]
+#       message("     The dimensions of the signature file are ", dim(Stromal_mat)[1], " rows and ", dim(Stromal_mat)[2], " columns.")
+#       methyl_mat = meth.data[match(Int, rownames(meth.data)),]
+#       Signature_meth = FeatureSelect.V4(CellLines.matrix = NULL, Heatmap = FALSE, export = TRUE,
+#                                         sigName = sig_name,
+#                                         Stroma.matrix = Stromal_mat,
+#                                         deltaBeta = 0.2, FDR = 0.01, MaxDMRs = 100, Phenotype.stroma = Stromal_v2.pheno[immuno_cells])
+#     } else {
+#       message("   The ", data_type, " data ", sig_type, " signature was not created.")
+#     }
+#     if (sig_type == "Cancer_Sig"){
+#       probes = Sig_mat$NAME
+#     } else {
+#       probes = rownames(Signature_meth$SignatureMatrix)
+#     }
+#     message("     There are ", length(probes), " probes in the export file."    )
+#     Prep.CancerType(Beta = methyl_mat, Probes = probes, fname = exp_name)
+#   }
+# }
+
+```
+
+
+```{r plot-methylcibersort-prediction-by-cell-composition-by-treatment-survival, fig.show='asis', fig.keep = 'all', fig.width=16, fig.height=12}
+# Import MethyCIBERSORT results from file
+ciber_type = ""  # all analyses c("", "noEndo", "ImmuneONLY", "Reduced_ImmuneCells", "48cohort")
+CIBER_results_dir = paste0(ifelse(nchar(sub_analysis)>12, gsub("Differential_stats/", "", results_dir), results_dir), "Data/CIBERSORTx/CIBERSORTx_Results/")
+CIBER_results = as.data.frame(fread(file=paste0(CIBER_results_dir,"CIBERSORTx_Meth_proportions_", ifelse(ciber_type=="", "", paste0(ciber_type, "_")), "Results.csv"))) # noEndo_
+CIBER_results %<>% dplyr::filter(!Mixture=="D05_22_020") #
+cell_types = colnames(CIBER_results)[(which(colnames(CIBER_results)=="Mixture")+1):(which(colnames(CIBER_results)=="P-value")-1)]
+# Define data.frame for plot
+cell_type_proportions = NULL 
+for (cell_type in cell_types){
+  cell_type_data = data.frame(Donor_Label = unique(CIBER_results$Mixture),
+                              Cell_Type = rep(cell_type, length(unique(CIBER_results$Mixture))),
+                              Proportion = sapply(unique(CIBER_results$Mixture), function(x) CIBER_results[which(CIBER_results$Mixture==x), cell_type]),
+                              Survival_Group = unlist(sapply(unique(CIBER_results$Mixture), function(x) sample_info$Survival_Group[which(sample_info$Sample_Name==x)])),
+                              Treatment = unlist(sapply(unique(CIBER_results$Mixture), function(x) sample_info$Treatment[which(sample_info$Sample_Name==x)])))
+  cell_type_proportions = rbind(cell_type_proportions, cell_type_data)
+}
+cell_type_proportions$Cell_Type = factor(cell_type_proportions$Cell_Type, levels = cell_types)
+cell_type_proportions$Survival_Group = factor(cell_type_proportions$Survival_Group, levels = sample_levels$Survival_Group)
+cell_type_proportions$Treatment = factor(cell_type_proportions$Treatment, levels = sample_levels$Treatment)
+
+```
+
+
+
+```{r plot-cibersort-prediction-by-cell-composition-treatment-survival, fig.show='asis', fig.keep = 'all', , fig.width=20, fig.height=12}
+# Import RNASeq CIBERSORT results from file
+batch_apply = TRUE
+CIBER_results_dir = paste0(ifelse(nchar(sub_analysis)>12, gsub("Differential_stats/", "", results_dir), results_dir), "Data/CIBERSORTx/CIBERSORTx_Results/")
+CIBER_RNASeq_results = as.data.frame(fread(file=paste0(CIBER_results_dir,"CIBERSORTx_RNASeq_proportions_", ifelse(ciber_type=="Reduced_ImmuneCells", paste0(ciber_type, "_"),""), ifelse(batch_apply, "withBatch_",""), "Results.csv")))
+CIBER_RNASeq_results %<>% dplyr::filter(!Mixture=="D05_22_020_T")
+cell_types = colnames(CIBER_RNASeq_results)
+# Define data.frame for plots
+cell_rna_proportions_all = NULL
+cell_rna_proportions_comb = NULL
+donor_list = gsub("_T", "", CIBER_RNASeq_results$Mixture)[which(gsub("_T", "", CIBER_RNASeq_results$Mixture)%in%sample_info$Sample_Name)]
+CIBER_RNASeq_results %<>% dplyr::filter(Mixture %in% paste(donor_list, "T", sep="_"))
+types_of_interest = unique(cell_types[(which(colnames(CIBER_RNASeq_results)=="Mixture")+1):(which(colnames(CIBER_RNASeq_results)=="P-value")-1)])
+for (cell_type in types_of_interest){
+  cell_type_data = data.frame(Donor_Label = donor_list,
+                              Cell_Type = rep(cell_type, nrow(CIBER_RNASeq_results)),
+                              Proportion = sapply(CIBER_RNASeq_results$Mixture, function(x) sum(CIBER_RNASeq_results[which(CIBER_RNASeq_results$Mixture==x), which(colnames(CIBER_RNASeq_results)==cell_type)])), 
+                              Survival_Group = unlist(sapply(donor_list, function(x) sample_info$Survival_Group[which(sample_info$Sample_Name==x)])),
+                              Treatment = unlist(sapply(donor_list, function(x) sample_info$Treatment[which(sample_info$Sample_Name==x)])))
+  cell_rna_proportions_all = rbind(cell_rna_proportions_all, cell_type_data)
+}
+cell_rna_proportions_all$Cell_Type = factor(cell_rna_proportions_all$Cell_Type, levels = types_of_interest)
+cell_rna_proportions_all$Survival_Group = factor(cell_rna_proportions_all$Survival_Group, levels = sample_levels$Survival_Group)
+cell_rna_proportions_all$Treatment = factor(cell_rna_proportions_all$Treatment, levels = sample_levels$Treatment)
+# code added to only look at those cell types of interest
+types_of_interest = unique(gsub(" naive", "", gsub(" memory", "", gsub(" resting" , "", gsub(" activated", "", gsub(" M0", "", gsub(" M1", "", gsub(" M2", "", types_of_interest))))))))
+cell_types = gsub(" naive", "", gsub(" memory", "", gsub(" resting" , "", gsub(" activated", "", gsub(" M0", "", gsub(" M1", "", gsub(" M2", "", cell_types)))))))
+for (cell_type in types_of_interest){
+  cell_type_data = data.frame(Donor_Label = donor_list,
+                              Cell_Type = rep(cell_type, nrow(CIBER_RNASeq_results)),
+                              Proportion = sapply(CIBER_RNASeq_results$Mixture, function(x) sum(CIBER_RNASeq_results[which(CIBER_RNASeq_results$Mixture==x), which(cell_types==cell_type)])), 
+                              Survival_Group = unlist(sapply(donor_list, function(x) sample_info$Survival_Group[which(sample_info$Sample_Name==x)])),
+                              Treatment = unlist(sapply(donor_list, function(x) sample_info$Treatment[which(sample_info$Sample_Name==x)])))
+  cell_rna_proportions_comb = rbind(cell_rna_proportions_comb, cell_type_data)
+}
+cell_rna_proportions_comb$Cell_Type = factor(cell_rna_proportions_comb$Cell_Type, levels = types_of_interest)
+cell_rna_proportions_comb$Survival_Group = factor(cell_rna_proportions_comb$Survival_Group, levels = sample_levels$Survival_Group)
+cell_rna_proportions_comb$Treatment = factor(cell_rna_proportions_comb$Treatment, levels = sample_levels$Treatment)
+
+# Nominate which set to plot
+cell_rna_proportions = cell_rna_proportions_all
+
+```
+
+```{r set-up-data-sets-for-diff-analysis-and-cluster-analysis, fig.width=10, fig.height=10, results='asis'}
+# **********
+# data sets for beta, M and dichotomised
+# ****************************
+meth_data = list(B_probes = meth_norm, 
+                 M_probes = meth_M_norm, 
+                 D_probes = t(apply(meth_norm, 1, function(x) ifelse(x>=dich_cutoff,1,0))),
+                 samples = sample_info) 
+
+meth_dev_B=NULL
+if (dev_type=="mad"){
+  meth_dev_B = apply(meth_data$B_probes[,which(sample_info[,"Sample_Group"]%in%c("sclc", "LC_neuro"))], 1, mad)
+  meth_dev_M = apply(meth_data$M_probes[,which(sample_info[,"Sample_Group"]%in%c("sclc", "LC_neuro"))], 1, mad)
+} else if (dev_type=="sd"){
+  meth_dev_B = apply(meth_data$B_probes[,which(sample_info[,"Sample_Group"]%in%c("sclc", "LC_neuro"))], 1, sd)
+  meth_dev_M = apply(meth_data$M_probes[,which(sample_info[,"Sample_Group"]%in%c("sclc", "LC_neuro"))], 1, sd)
+} else {
+  message("To calculate the deviation dev_type needs to be 'sd' for standard deviation or 'mad' for median absolute deviation.")
+}
+if (!is.null(meth_dev_B)){
+  meth_dev_B = meth_dev_B[order(meth_dev_B)]
+  # decided to use the probes from the variation of the beta values across all samples
+  meth_dev_M = meth_dev_B 
+}
+
+```
+
+\newpage  
+
+# Cluster Analysis to Investigate Subtype Classifications.  
+A cluster analysis was performed on data to obtain a cluster classification for each sample.  
+
+## Cluster Analysis.  
+Prior to clustering one of the following filter steps were applied:  
+1. Probes that mapped to methylated regions from Heeke et.al. and a `r ifelse(dev_type=="sd", "standard deviation", "median absolute deviation") ` across the beta values for the Tumour samples with a cut off above `r cutoff `.     
+2. The top 2000 probes with a `r ifelse(dev_type=="sd", "standard deviation", "median absolute deviation") ` across the beta values for the Tumour samples with a cut off above `r cutoff `.  
+3. Probes that mapped to RNASeq genes of significance from Heeke et.al. and a `r ifelse(dev_type=="sd", "standard deviation", "median absolute deviation") ` across the beta values for the Tumour samples with a cut off above `r cutoff `.     
+The dichotomised data for each analysis was based on the following criteria:  
+Beta values >=`r dich_cutoff ` were considered methylated and given a value of 1 otherwise they were considered un-methylated and given a value of 0.  
+
+Samples were clustered using Euclidean distance and Ward.D2 method or binary distance measure on the dichotomised beta values. The results of this clustering are represented in dendograms and heatmaps. The heatmaps were clustered by rows only, using either a binary or Euclidean distance measure with Ward's clustering method.  
+
+
+```{r plot-parameters-and-data}
+# set plot parameters
+main_cex = 0.9
+col_lab_cex = 0.6
+branch_width = 3
+hmap_col_size = 5
+hmap_txt_size = 6.5
+# colours for clusters obtained probes in common with RBBS data
+samp_clust_col = c("#666666", "#5489cf", "#cf9354", "#44bb9e", "#cf549f", "#cf5c54")
+samp_clust_fill = c("#dddddd", "#9bb8df", "#d6b38f", "#9ce2db", "#dea0c6", "#e2a19c")
+# colours for most variable probes analysis
+samp_var_col = c("#666666", "#43bcb2", "#a63ac5", "#bc434f", "#8cbc43", "#c1a83e")
+samp_var_fill = c("#dddddd", "#bbe7e3", "#cf95e0", "#d9959c", "#c6dea2", "#d7c885")
+
+if (sub_analysis==""){
+  # define sample group of interest
+  samp_gp = "Meth_Cluster"
+}
+
+```
+
+\newpage
+
+### Cluster Tumour Samples using Probes in Genomic Regions of Interest.
+For this analysis the most variable probes in common with regions using RRBS identified as predicitve of heterogeneity from, Heeke et.al paper were used.  
+
+
+```{r analyse-sample-clusters-with-k-num-regions, fig.width=12, fig.height=11, fig.align='center', results='asis', fig.keep='last'}
+if (sub_analysis==""){
+  dat_sets = c("Beta", "M", "Dichot")
+  Probe_info %<>% dplyr::filter(!CHR=="")
+  chr_levels = c(seq(1,22,1), "X", "Y")
+  Probe_info$CHR = factor(Probe_info$CHR, levels=chr_levels)
+  Probe_info %<>% arrange(CHR, MAPINFO)
+  Probe_info %<>% dplyr::filter(IlmnID%in%rownames(meth_norm))
+  # analysis with sd of probes across all samples
+  region_probes = NULL
+  get_region_probes = TRUE
+  if (get_region_probes){
+    # ********** analysis with meth regions from paper  **********
+    #  ********** the code below reads in the regions from Heeke et.al. that are mapped to GRCh38  **********
+    regions_of_interest = as.data.frame(fread(file=paste0(working_dir, "Sample_Sheets/Genes/Heeke_Methylation_Regions.csv")))
+    dups = which(duplicated(regions_of_interest$Chr_Range_38))
+    for (dup in dups){
+      regions_of_interest$Subtype[which(regions_of_interest$Chr_Range_38==regions_of_interest$Chr_Range_38[dup])] = paste(regions_of_interest$Subtype[which(regions_of_interest$Chr_Range_38==regions_of_interest$Chr_Range_38[dup])], collapse=";")
+    }
+    regions_of_interest = regions_of_interest[which(!duplicated(regions_of_interest$Chr_Range_38)),]
+    for (i in 1:nrow(regions_of_interest)){
+      # ********** the code below uses the regions from Heeke et.al. that are mapped to GRCh38  **********
+      row_probes = dplyr::filter(Probe_info, CHR_hg38==regions_of_interest$CHR[i], (Start_hg38>=regions_of_interest$start_pos[i]|End_hg38>=regions_of_interest$start_pos[i]), (Start_hg38<=regions_of_interest$end_pos[i]|End_hg38<=regions_of_interest$end_pos[i])) #$IlmnID
+      if (nrow(row_probes)>0){
+        row_probes %<>% dplyr::mutate(Heeke_Chr_Range_38 = rep(regions_of_interest$Chr_Range_38[i], nrow(row_probes)),
+                                      Heeke_Subtype = rep(regions_of_interest$Subtype[i], nrow(row_probes))) %>% dplyr::select(Heeke_Subtype, Heeke_Chr_Range_38, all_of(colnames(row_probes)))
+        # row_probes %<>% dplyr::select(Heeke_Subtype, Heeke_Chr_Range_38, all(colnames(row_probes)[1:(ncol(row_probes)-2)]))
+        region_probes = rbind(region_probes, row_probes)
+      }
+    }
+  }
+  # extract probes and methylation information for the probes found in methylation regions and annotate the ones used for clustering.
+  if (!is.null(region_probes$IlmnID)){
+    r_meth_data = meth_data$B_probes[region_probes$IlmnID,]
+    r_clust_probes = apply(r_meth_data, 1, sd)
+    region_probe_info = dplyr::mutate(region_probes, Region_Clust_probe = sapply(IlmnID, function(x) ifelse(x%in%names(r_clust_probes[which(r_clust_probes>0.2)]), TRUE, FALSE)))
+    r_meth_data = data.frame(IlmnID = rownames(r_meth_data),
+                             r_meth_data)
+    region_probe_info = merge(region_probe_info, r_meth_data, by="IlmnID")
+  }
+  # run clustering looking at different number of clusters
+  num_clust_probes = 2000
+  clust_meth = "ward.D2" # ward.D2, complete, ward.D, average
+  samp_clust_meth = list()
+  for (dat_set in dat_sets){
+    if (dat_set == "Beta"){
+      # change cutoff analysis to include the top 1% and 2% most variable promoter probes
+      if (is.null(region_probes)){
+        meth_clust_dev = tail(meth_dev_B, n=num_clust_probes) # tail(meth_dev_B[which(names(meth_dev_B)%in%biological_probes)], n=num_clust_probes)
+        meth_clust_data = meth_data$B_probes[names(meth_clust_dev),]
+      } else {
+        meth_clust_data = meth_data$B_probes[region_probes$IlmnID,]
+        meth_clust_data = meth_clust_data[which(apply(meth_data$B_probes[region_probes$IlmnID,], 1, sd)>0.2),]
+      }
+      dist_meth = "euclidean"
+    } else if (dat_set == "M"){
+      if (is.null(region_probes)){
+        meth_clust_dev = tail(meth_dev_M, n=num_clust_probes) #tail(meth_dev_M[which(names(meth_dev_M)%in%biological_probes)], n=num_clust_probes)
+        meth_clust_data = meth_data$M_probes[names(meth_clust_dev),]
+      } else {
+        meth_clust_data = meth_data$M_probes[region_probes$IlmnID,]
+        meth_clust_data = meth_clust_data[which(apply(meth_data$B_probes[region_probes$IlmnID,], 1, sd)>0.2),]
+      }
+      dist_meth = "euclidean"
+    } else {
+      if (is.null(region_probes)){
+        b_sd = names(tail(meth_dev_B, n=num_clust_probes)) # names(tail(meth_dev_B[which(names(meth_dev_B)%in%biological_probes)], n=num_clust_probes))
+        m_sd = names(tail(meth_dev_M, n=num_clust_probes)) # names(tail(meth_dev_M[which(names(meth_dev_M)%in%biological_probes)], n=num_clust_probes))
+        meth_clust_dev = meth_dev_B[union(intersect(b_sd, m_sd), union(b_sd[which(!b_sd%in%m_sd)], m_sd[which(!m_sd%in%b_sd)]))]
+        meth_clust_data = meth_data$D_probes[names(meth_clust_dev),]
+      } else {
+        meth_clust_data = meth_data$D_probes[region_probes$IlmnID,]
+        meth_clust_data = meth_clust_data[which(apply(meth_data$B_probes[region_probes$IlmnID,], 1, sd)>0.2),]
+      }
+      dist_meth = "binary"
+    }
+    # **********
+    # Clusters the tumour samples using binary distance measure and Ward's method for linkage
+    # **********
+    eval_table = get.dend.fit(logit.mat = meth_clust_data,
+                              clust.meth = clust_meth,
+                              dist.meth = dist_meth,
+                              k.values = c(3,4,5))
+    
+    grid.arrange(eval_table)
+    clust_data = meth_clust_data
+    colnames(clust_data) = paste0(colnames(clust_data), "_T")
+    samp_clust_meth[[dat_set]] = get.leaf.order (clust_data, 
+                                                 dist.method=dist_meth,
+                                                 hclust.method=clust_meth,
+                                                 k.num=4)
+    par(mfrow=c(3,1))
+    for (i in 3:5){
+      sample.dendogram (dat=meth_clust_data, 
+                        samp.type="tumour",
+                        probe.type=paste(ifelse(is.null(region_probes), "most variable", "Paper Meth regions"), dat_set, "Values"), #"hypo-methylated biologically relevant"
+                        clust.col=samp_clust_col,
+                        dist.method = dist_meth,
+                        clust.method = clust_meth,
+                        k.num = (i),
+                        col.lab.cex = col_lab_cex,
+                        main.cex = main_cex,
+                        branch.wdth = branch_width)
+    }
+    par(mfrow=c(1,1))
+  }
+}
+```
+
+```{r populate-sample-data-with_clusters-regions, fig.width=9, fig.height=11, fig.align='center', results='asis', fig.keep='last'}
+samp_cell_stat = sapply(sample_info$Cellularity, function(x) ifelse(x==0, "0%", ifelse(x<50, "<50%", ifelse(x<75, "50% to <75%", ifelse(x<90, "75% to <90%", ">=90%")))))
+names(samp_cell_stat) = sample_info$Sample_Name
+new_samp_info = add.samp.cat(cat.name="Tumour_Content",
+                             cat.values=samp_cell_stat,
+                             cat.levels=c("<50%", "50% to <75%", "75% to <90%", ">=90%"),
+                             col=c(colorRamp2(seq(1,5, length=5),rev(brewer.pal(11, "BrBG")[1:5]))(1:4)),
+                             col.bord=c(colorRamp2(seq(1,5, length=5),rev(brewer.pal(11, "BrBG")[1:5]))(2:5)),
+                             samp.inf=sample_info,
+                             samp.cat=sample_categories,
+                             samp.type="",
+                             samp.lev=sample_levels,
+                             cat.cols=colour_cat,
+                             cat.col.borders=colour_cat_border,
+                             samp.clust = NULL
+                             )
+new_samp_info$Sample_info$Sample_Name = paste0(new_samp_info$Sample_info$Sample_Name, "_T")
+if (sub_analysis==""){
+  # best cluster M-values with 4 clusters using euclidean distance and ward.D clustering method
+  samp_clust_num=4
+  new_samp_info$Sample_Clusters = list()
+  for (dat_set in dat_sets){
+    samp_clust = samp_clust_meth[[dat_set]]
+    new_samp_info$Sample_Clusters[[paste0(ifelse(is.null(region_probes), "Var_ALL_", "Paper_Regions"), ifelse(is.null(region_probes), num_clust_probes, ""), "_", dat_set)]] = samp_clust
+    meth_clust = sapply(new_samp_info$Sample_info$Sample_Name, function(x) ifelse(x%in%names(samp_clust), samp_clust[x], "Bgn"))
+    new_samp_info = add.samp.cat(cat.name=paste0(ifelse(is.null(region_probes), "Var_ALL_", "Paper_Regions"), ifelse(is.null(region_probes), num_clust_probes, ""), "_", dat_set),
+                                 cat.values=meth_clust,
+                                 cat.levels=c("Bgn", paste0("Group", c(1:samp_clust_num))),
+                                 col=samp_clust_fill[1:(samp_clust_num+1)],
+                                 col.bord=samp_clust_col[1:(samp_clust_num+1)],
+                                 samp.inf=new_samp_info$Sample_info,
+                                 samp.cat=new_samp_info$sample_categories,
+                                 samp.type="",
+                                 samp.lev=new_samp_info$sample_levels,
+                                 cat.cols=new_samp_info$colour_cat,
+                                 cat.col.borders=new_samp_info$colour_cat_border,
+                                 samp.clust = new_samp_info$Sample_Clusters
+    )
+  }
+}
+
+```
+
+
+```{r choose-best-fit-from above-result-regions}
+# **********
+# Plots the heatmap of the probes used in the above block analysis and is semi-supervised in methylation cluster order
+# **********
+if (sub_analysis==""){
+  # best cluster M-values with 4 clusters using euclidean distance and ward.D clustering method
+  samp_clust_num=4
+  dat_set = "M"
+  if (dat_set == "Beta"){
+    if (is.null(region_probes)){
+      # change cutoff analysis to include the top 1% and 2% most variable promoter probes
+      meth_clust_dev = tail(meth_dev_B, n=num_clust_probes) 
+      meth_clust_all = meth_data$B_probes[names(meth_clust_dev),]
+    } else {
+      meth_clust_all = meth_data$B_probes[region_probes$IlmnID,]
+      meth_clust_all = meth_clust_all[which(apply(meth_data$B_probes[region_probes$IlmnID,], 1, sd)>0.2),]
+    }
+    dist_meth = "euclidean"
+  } else if (dat_set == "M"){
+    if (is.null(region_probes)){
+      meth_clust_dev = tail(meth_dev_M, n=num_clust_probes) 
+      meth_clust_all = meth_data$M_probes[names(meth_clust_dev),]
+    } else {
+      meth_clust_all = meth_data$D_probes[region_probes$IlmnID,]
+      meth_clust_all = meth_clust_all[which(apply(meth_data$B_probes[region_probes$IlmnID,], 1, sd)>0.2),]
+    }
+    dist_meth = "euclidean"
+  } else {
+    if (is.null(region_probes)){
+      b_sd = names(tail(meth_dev_B, n=num_clust_probes)) 
+      m_sd = names(tail(meth_dev_B, n=num_clust_probes)) 
+      meth_clust_dev = meth_dev_B[union(intersect(b_sd, m_sd), union(b_sd[which(!b_sd%in%m_sd)], m_sd[which(!m_sd%in%b_sd)]))]
+      meth_clust_all = meth_data$D_probes[names(meth_clust_dev),]
+    } else {
+      meth_clust_all = meth_data$D_probes[region_probes$IlmnID,]
+      meth_clust_all = meth_clust_all[which(apply(meth_data$B_probes[region_probes$IlmnID,], 1, sd)>0.2),]
+    }
+    dist_meth = "binary"
+  }
+  colnames(meth_clust_all) = paste0(colnames(meth_clust_all), "_T")
+  samp_clust = samp_clust_meth[[dat_set]]
+}
+
+```
+
+
+\newpage
+
+### Heatmaps Supervised by Methylation Clusters on Region Probe Set used for Cluster Analysis.  
+
+
+```{r plot-sample-heatmaps-regions, fig.width=15, fig.height=13, fig.align='center', results='asis'}
+
+# sort and filter probe information.
+sub_categories = c("Meth_Cluster") #, "Tumour_Content", "Treatment", "Survival_Group", "Sample_Group")
+if (sub_analysis==""){
+  if (is.null(region_probes)){
+    clust_probes = Probe_info$IlmnID[which(Probe_info$IlmnID%in%rownames(meth_norm)[which(rownames(meth_norm)%in%names(tail(meth_dev_B, n=num_clust_probes)))])]
+  } else {
+    clust_probes = rownames(meth_clust_all)
+  }
+  if (length(grep("benign", sample_info$Sample_Group))>0){
+    benign_samp = c(rep("Bgn", length(which(sample_info$Sample_Group=="benign"))))
+    names(benign_samp) = sample_info$Sample_Name[which(sample_info$Sample_Group=="benign")]
+    samp_clust = c(benign_samp, samp_clust)
+  }
+  dend_hmaps = sample.dend.heatmap(dat=meth_clust_all[clust_probes,],
+                                   meth.norm=meth_norm[clust_probes,],
+                                   samp.inf=new_samp_info$Sample_info, #sample_info,NULL
+                                   samp.type = "tumour",
+                                   samp.clust.col = samp_clust_col,
+                                   clust.rows=TRUE,
+                                   probe.type = "Paper region",
+                                   k.num = samp_clust_num,
+                                   hmap.txt = 14, #hmap_txt_size,
+                                   hmap.col = hmap_col_size,
+                                   samp.cat = new_samp_info$sample_categories[sub_categories],
+                                   col.cat = new_samp_info$colour_cat_border,
+                                   cutoff = round(min(tail(meth_dev_B, n=num_clust_probes)), 2), 
+                                   silent=TRUE,
+                                   samp.clust = samp_clust,
+                                   hclust.method = clust_meth,
+                                   dist.method = dist_meth
+                                   )
+  grid.arrange(dend_hmaps$beta$gtable)
+}
+
+```
+
+\newpage
+
+### Cluster Tumour Samples using Probes in RNASeq Genes of Interest.
+For this analysis I used the variables probes located in 156 genes from a set of 181 using RNASeq  identified with machine learning as predictive of heterogeneity from, Heeke et.al paper.  
+
+
+```{r analyse-sample-clusters-with-k-num-rnaseq, fig.width=12, fig.height=11, fig.align='center', results='asis', fig.keep='last'}
+if (sub_analysis==""){
+  # **********
+  # reading in all genes considered in the analysis
+  # **********
+  genes_set_data = as.data.frame(fread(paste0(working_dir, "Sample_Sheets/Genes/RNASeq_SCLC_Genes_Of_Interest_flagged_v3.csv")))
+  extra_genes = c("CD274", "CTLA4", "PDCD1") # , "HMGB3" on X chromosome won't be in methylation data
+  genes_set_data = rbind(genes_set_data,
+                         data.frame(Gene_number = seq(700, 699+length(extra_genes), 1),
+                                    Hugo_Symbol = extra_genes,
+                                    CHR = c("chr9", "chr2", "chr2"),
+                                    Status = rep("extra", length(extra_genes)),
+                                    RNASeq_TMM = rep(TRUE, length(extra_genes)),
+                                    Probe_Info = rep(TRUE, length(extra_genes)))
+                         )
+  # extract subsets of genes for later investigation
+  gene_sets = c("RNASeq", "apm", "fibroblast2", "inflamed", "hla", "sclc", "treatment", "oncogene", "immune", "meth_enzyme", "parpi", "special", "fibroblast", "NE", "non-NE", "PLCG2-high", "other", "cytolytic", "epithelial", "mesenchymal", "extra")
+  genes_of_interest = list()
+  for (gene_set in gene_sets){
+    genes_of_interest[[gene_set]] = dplyr::filter(genes_set_data, grepl(gene_set, Status))
+    if (gene_set=="RNASeq"){
+      genes_of_interest[[gene_set]] %<>% dplyr::filter(!CHR=="chrX")
+      genes_of_interest[[gene_set]] %<>% arrange(as.numeric(gsub("chr", "", CHR)))
+    } else if (gene_set == "fibroblast"){
+      genes_of_interest[[gene_set]] %<>% dplyr::filter(!grepl("fibroblast2", Status))
+    } else if (gene_set == "NE") {
+      genes_of_interest[[gene_set]] %<>% dplyr::filter(!grepl("non-NE", Status))
+    }
+  }
+  # get probe information for all genes before filtering for rnaseq genes only
+  gene_Probe_info = Probe_info[grep(paste(gsub(";", "|", genes_set_data$Hugo_Symbol), collapse="|"), Probe_info$UCSC_RefGene_Name),]
+  gene_Probe_info %<>% mutate(Hugo_Symbol = sapply(UCSC_RefGene_Name, function(x) paste(unique(unlist(strsplit(x, ";")))[grep("LOC", unique(unlist(strsplit(x, ";"))), invert=TRUE)], collapse=";")))
+  for (gene_row in 1:nrow(gene_Probe_info)){
+    if (length(grep(";", gene_Probe_info$Hugo_Symbol[gene_row]))>0){
+      genes = unlist(strsplit(gene_Probe_info$Hugo_Symbol[gene_row], ";"))
+      for (gene in genes){
+        if (which(genes==gene)==1){
+          gene_Probe_info$Hugo_Symbol[gene_row]=gene
+        } else {
+          gene_Probe_info = rbind(gene_Probe_info, gene_Probe_info[gene_row,])
+          gene_Probe_info$Hugo_Symbol[nrow(gene_Probe_info)]=gene
+        }
+      }
+    }
+  }
+  all_probes=FALSE
+  # only use the probes associated with the RNASeq analysis for the methylation clustering.
+  gene_probes = rownames(meth_norm)[which(rownames(meth_norm)%in%c(unique(gene_Probe_info$IlmnID[which(gene_Probe_info$Hugo_Symbol%in%genes_of_interest$RNASeq$Hugo_Symbol)])))]
+  rna_gene_probe_info = dplyr::filter(gene_Probe_info, IlmnID%in%gene_probes, Hugo_Symbol%in%genes_of_interest$RNASeq$Hugo_Symbol)
+  get_gene_number = length(unique(rna_gene_probe_info$Hugo_Symbol[which(rna_gene_probe_info$IlmnID%in%gene_probes)]))
+  clust_gene_probes = rownames(meth_norm)[which(rownames(meth_norm)%in%c(unique(rna_gene_probe_info$IlmnID)))]
+  if (!all_probes){
+    gene_meth_dev_B = apply(meth_data$B_probes[clust_gene_probes,], 1, sd)
+    clust_gene_dev = gene_meth_dev_B[which(gene_meth_dev_B>0.2)]
+    clust_gene_probes = names(clust_gene_dev)
+  } 
+  get_clust_gene_number = length(unique(rna_gene_probe_info$Hugo_Symbol[which(rna_gene_probe_info$IlmnID%in%clust_gene_probes)]))
+  # get the probe and methylation information used in the analysis
+  rna_gene_probe_info = rna_gene_probe_info[which(!duplicated(rna_gene_probe_info$IlmnID)),]
+  rna_gene_probe_info = rna_gene_probe_info[, which(!colnames(rna_gene_probe_info)=="Hugo_Symbol")]
+  rna_gene_probe_info %<>% dplyr::mutate(RNASeq_Clust_Probe = sapply(IlmnID, function(x) ifelse(x%in%clust_gene_probes, TRUE, FALSE))) %>% dplyr::select(RNASeq_Clust_Probe, all_of(colnames(rna_gene_probe_info)))
+  rna_meth_data = meth_norm[which(rownames(meth_norm)%in%gene_probes),]
+  rna_meth_data = data.frame(IlmnID = rownames(rna_meth_data),
+                             rna_meth_data)
+  rna_probe_info = merge(rna_gene_probe_info, rna_meth_data, by="IlmnID")
+  gene_clust_meth = list()
+  gene_meth_dev_B=NULL
+  for (dat_set in dat_sets){
+    # gene_probes = rownames(meth_norm)[which(rownames(meth_norm)%in%c(gene_Probe_info$IlmnID))]
+    if(dat_set=="M"){
+      gene_clust_num = 4
+      if (!all_probes){
+        gene_probes = clust_gene_probes
+      } 
+      gene_dat = meth_data$M_probes[gene_probes,]
+      dist_meth = "euclidean"
+    } else if (dat_set=="Beta") {
+      gene_clust_num = 4
+      if (!all_probes){
+        gene_probes = clust_gene_probes
+      } 
+      gene_dat = meth_data$B_probes[gene_probes,]
+      dist_meth = "euclidean"
+    } else {
+      gene_clust_num = 4
+      if (!all_probes){
+        gene_probes = clust_gene_probes
+      } 
+      gene_dat = meth_data$D_probes[gene_probes,]
+      dist_meth = "binary"
+    }
+    eval_table = get.dend.fit(logit.mat = gene_dat,
+                              clust.meth = clust_meth,
+                              dist.meth = dist_meth,
+                              k.values = c(3,4,5))
+    grid.arrange(eval_table)
+    clust_data = gene_dat
+    colnames(clust_data) = paste0(colnames(clust_data), "_T")
+    gene_clust_meth[[dat_set]] = get.leaf.order (clust_data, 
+                                                 dist.method=dist_meth,
+                                                 hclust.method=clust_meth,
+                                                 k.num=gene_clust_num)
+    gene_clust_col = c("#666666", "#49b05c", "#5108b4","#f58919", "#d9c80d", "#f188d5", "#610aa3", "#e62843")
+    gene_clust_fill = c("#dddddd", "#b9e4c1", "#d3c3ef", "#f8d9b0", "#edeac4", "#fbdff4", "#d2a0f8", "#f49fab")
+    # Add methylation clusters to sample information
+    gene_clust = gene_clust_meth[[dat_set]]
+    new_samp_info$Sample_Clusters[[paste0(nrow(genes_of_interest$RNASeq), "Gene_Meth_", nrow(clust_data), "_", dat_set)]] = gene_clust
+    meth_clust = sapply(new_samp_info$Sample_info$Sample_Name, function(x) ifelse(x%in%names(gene_clust), gene_clust[x], "Bgn"))
+    new_samp_info = add.samp.cat(cat.name=paste0(nrow(genes_of_interest$RNASeq), "Gene_Meth_", nrow(clust_data), "_", dat_set),
+                                 cat.values=meth_clust,
+                                 cat.levels=c("Bgn", paste0("Group", c(1:gene_clust_num))),
+                                 col=gene_clust_fill[1:(gene_clust_num+1)],
+                                 col.bord=gene_clust_col[1:(gene_clust_num+1)],
+                                 samp.inf=new_samp_info$Sample_info,
+                                 samp.cat=new_samp_info$sample_categories,
+                                 samp.type="",
+                                 samp.lev=new_samp_info$sample_levels,
+                                 cat.cols=new_samp_info$colour_cat,
+                                 cat.col.borders=new_samp_info$colour_cat_border,
+                                 samp.clust = new_samp_info$Sample_Clusters
+                                 )
+    par(mfrow=c(3,1))
+    for (i in 3:5){
+      samp_dend = sample.dendogram (dat=gene_dat,
+                                    samp.type="tumour",
+                                    probe.type=paste("most variable",  nrow(genes_of_interest$RNASeq), "Gene", dat_set, "Values"), #"hypo-methylated biologically relevant"
+                                    clust.col=gene_clust_col[1:(i+1)],
+                                    dist.method = dist_meth, 
+                                    clust.method = clust_meth,
+                                    k.num = (i),
+                                    col.lab.cex = col_lab_cex,
+                                    main.cex = main_cex,
+                                    branch.wdth = branch_width)
+    }
+    par(mfrow=c(1,1))
+  }
+  # best cluster M-values with 4 clusters using euclidean distance and ward.D clustering method
+  cluster_data = data.frame(Index = c(1:length(gene_clust_meth$M)),
+                            Donor_Label = names(gene_clust_meth$M),
+                            Meth_Cluster = gene_clust_meth$M)
+}
+
+```
+
+
+\newpage
+
+### Heatmaps Supervised by Methylation Clusters on Probe Set used for Cluster Analysis.  
+
+
+```{r plot-clusters-sample-heatmaps-rnaseq, fig.width=15, fig.height=13, fig.align='center', results='asis'}
+if (sub_analysis==""){
+  # **********
+  # Plots the heatmap of the probes used in the above block analysis and is semi-supervised in methylation cluster order
+  # **********
+  # Add methylation clusters to sample information
+  gene_clust_num = 4
+  gene_dat_set = "M"
+  samp_clust = gene_clust_meth[[gene_dat_set]]
+  if(gene_dat_set=="M"){
+    gene_probes = clust_gene_probes
+    gene_dat = meth_data$M_probes[gene_probes,]
+    dist_meth = "euclidean"
+  } else if (gene_dat_set=="Beta") {
+    gene_probes = clust_gene_probes
+    gene_dat = meth_data$B_probes[gene_probes,]
+    dist_meth = "euclidean"
+  } else {
+    gene_probes = clust_gene_probes
+    gene_dat = meth_data$D_probes[gene_probes,]
+    dist_meth = "binary"
+  }
+  colnames(gene_dat) = paste0(colnames(gene_dat), "_T")
+  samp_clust = gene_clust_meth[[gene_dat_set]]
+  plot_cat = new_samp_info$sample_categories[c("Tumour_Content", "Treatment", "Survival_Group", "Sample_Group")]
+  dend_hmaps = sample.dend.heatmap(dat=gene_dat,
+                                   meth.norm=meth_data$B_probes[gene_probes,],
+                                   samp.inf=new_samp_info$Sample_info,
+                                   samp.type = "tumour",
+                                   samp.clust.col = gene_clust_col[1:(gene_clust_num+1)],
+                                   clust.rows=TRUE,
+                                   probe.levels = gene_probes,
+                                   probe.type = ifelse(all_probes, "all relevant", "most variable"),
+                                   k.num = (gene_clust_num),
+                                   hmap.txt = 14,
+                                   hmap.col = hmap_col_size,
+                                   samp.cat = plot_cat,
+                                   col.cat = new_samp_info$colour_cat_border,
+                                   cutoff = paste("Beta >=", round(min(clust_gene_dev), 4)),
+                                   new.meth.subroup = "Gene_Meth_Subgroup",
+                                   hclust.method = clust_meth,
+                                   dist.method = dist_meth,
+                                   silent=TRUE,
+                                   samp.clust = samp_clust
+                                   )
+}
+genes_in_clust = c()
+for (probe in rownames(gene_dat)){
+  probe_genes = unique(unlist(strsplit(Probe_info$UCSC_RefGene_Name[which(Probe_info$IlmnID==probe)], ";")))
+  probe_genes = probe_genes[which(probe_genes%in%genes_of_interest$RNASeq$Hugo_Symbol)]
+  genes_in_clust = unique(c(genes_in_clust, probe_genes))
+}
+samp_dend = sample.dendogram (dat=gene_dat,
+                              samp.type="tumour",
+                              probe.type=paste("most variable",  nrow(genes_of_interest$RNASeq), "Gene", dat_set, "Values"), 
+                              clust.col=gene_clust_col[1:5],
+                              dist.method = dist_meth,
+                              clust.method = clust_meth,
+                              k.num = (4),
+                              col.lab.cex = col_lab_cex,
+                              main.cex = main_cex,
+                              branch.wdth = branch_width)
+# *************************
+# Fig 1a
+# *************************
+grid.arrange(dend_hmaps$beta$gtable)
+
+```
+
+
+```{r create-gistic-with-clinical }
+samp_order = gsub("_T", "", names(samp_clust))
+gistic_arm = as.data.frame(fread(file=paste0(working_dir, "Sample_Sheets/GISTIC/Fielding_-_Lung_WGS_GISTIC_by_arm.tsv")))
+rownames(gistic_arm) = gistic_arm$`Chromosome Arm`
+gistic_arm = gistic_arm[,samp_order[which(samp_order%in%colnames(gistic_arm))]]
+loh_arm = as.data.frame(fread(file=paste0(working_dir, "Sample_Sheets/GISTIC/Fielding_-_Lung_WGS_LoH_by_arm.tsv")))
+rownames(loh_arm) = loh_arm$Chrom_Arm
+loh_arm = loh_arm[,samp_order[which(samp_order%in%colnames(loh_arm))]]
+colnames(gistic_arm) = sapply(colnames(gistic_arm), function(x) paste0(x, "_T"))
+colnames(loh_arm) = sapply(colnames(loh_arm), function(x) paste0(x, "_T"))
+loh_arm = loh_arm[which(rownames(loh_arm)%in%rownames(gistic_arm)),]
+samp_df = new_samp_info$Sample_info[which(new_samp_info$Sample_info$Sample_Name%in%colnames(gistic_arm)),]
+rownames(samp_df) = samp_df$Sample_Name
+samp_df = samp_df[colnames(gistic_arm),]
+cn_clin_plots = draw.clinical.annotations(samp.info = samp_df,
+                                          samp.cat = c("Sample_Group", "Survival_Group", "Treatment", "Tumour_Content", "Meth_Cluster"),
+                                          samp.lev = new_samp_info$sample_levels,
+                                          cat.col = new_samp_info$colour_cat_border,
+                                          matrix.comparison = "with Copy Number",
+                                          hm.matrix = as.matrix(gistic_arm),
+                                          hm.matrix.col = colorRamp2(c(-4,0,4), c("blue", "white", "red")),
+                                          hm.lab = "Median LogR",
+                                          hm.r.pad = 2.5,
+                                          extra.matrix = as.matrix(loh_arm),
+                                          extra.matrix.col = colorRamp2(c(0,100), c("white", "navy")),
+                                          extra.lab = "LoH Percent",
+                                          extra.r.pad = 1.5
+                                          )
+
+```
+
+
+```{r plot-hmap-gistic-clinical, fig.height=12, fig.width=13 }
+plot_list = list(cn_clin_plots$annot, cn_clin_plots$extra, cn_clin_plots$ht) 
+plot_overview = arrangeGrob(grobs = plot_list, layout_matrix = rbind(c(rep(1, 200)), 
+                                                                     c(rep(NA, 6), rep(2, 190), rep(NA, 3)), 
+                                                                     c(rep(NA, 6), rep(2, 190), rep(NA, 3)), 
+                                                                     c(rep(NA, 6), rep(2, 190), rep(NA, 3)), 
+                                                                     c(rep(NA, 6), rep(2, 190), rep(NA, 3)), 
+                                                                     c(rep(NA, 6), rep(3, 191), rep(NA, 2)), 
+                                                                     c(rep(NA, 6), rep(3, 191), rep(NA, 2)), 
+                                                                     c(rep(NA, 6), rep(3, 191), rep(NA, 2)), 
+                                                                     c(rep(NA, 6), rep(3, 191), rep(NA, 2)) 
+                                                                     ))
+# *************************
+# Fig S7 a & b
+# *************************
+grid.arrange(plot_overview)
+
+```
+
+
+```{r examine-chromosomal-arm-loh, fig.show='asis', fig.keep='all', fig.width=10, fig.height=5 }
+loh_arms = c("8p", "19p")
+loh_arm_p = list()
+for (arm in loh_arms){
+  plot_data = melt(loh_arm[arm,], value.name = "LOH") %>% dplyr::mutate(Meth_Cluster = sapply(variable, function(x) samp_df$Meth_Cluster[which(samp_df$Sample_Name==x)]))
+  gp_levels = unique(samp_df$Meth_Cluster)[order(unique(samp_df$Meth_Cluster))]
+  p = ggplot(data=plot_data, aes(x=Meth_Cluster, y=LOH)) + geom_boxplot(aes(fill=Meth_Cluster, color=Meth_Cluster))  + 
+    scale_fill_manual(values = new_samp_info$colour_cat$Meth_Cluster) + scale_color_manual(values = new_samp_info$colour_cat_border$Meth_Cluster) + ylim(0,100) +
+      labs(title=paste("CHR", arm), y="Percentage LOH", x="Methylation Sub-Group") + 
+      theme(panel.background=element_rect(fill='transparent'),
+            axis.line = element_line(color="black"),
+            axis.text.x.bottom = element_text(size=10), 
+            axis.text = element_text(size=12),
+            plot.title = element_text(size=14),
+            legend.position = "none") +
+      stat_compare_means(aes(group=Meth_Cluster), method=ifelse(length(gp_levels)>2, "kruskal.test", "wilcox.test"), comparisons=NULL) 
+  loh_arm_p[[arm]] = ggplotGrob(p)   
+}
+gt = arrangeGrob(grobs=loh_arm_p, ncol=2)
+# *************************
+# Fig S7 c & d
+# *************************
+grid.arrange(gt)
+
+```
+
+```{r plot-methylcibersort-prediction-by-cell-composition-by-cluster, fig.show='asis', fig.keep = 'all', fig.width=25, fig.height=10}
+cell_type_proportions %<>% dplyr::mutate(Methylation_Cluster = sapply(Donor_Label, function(x) new_samp_info$Sample_info$Meth_Cluster[which(gsub("_T", "", new_samp_info$Sample_info$Sample_Name)==x)])) 
+cell_type_proportions$Methylation_Cluster = factor(cell_type_proportions$Methylation_Cluster, levels = unique(new_samp_info$Sample_info$Meth_Cluster)[order(unique(new_samp_info$Sample_info$Meth_Cluster))])
+groups = c("Methylation_Cluster") #, "Survival_Group
+gene_clust_col = c(Bng="#666666", `Group1`="#49b05c", `Group2`="#5108b4", `Group3`="#f58919", `Group4`="#d9c80d", `Group5`="#f188d5",`Group6`= "#610aa3", `Group7`="#e62843")
+gene_clust_fill = c(Bng="#dddddd", `Group1`="#b9e4c1", `Group2`="#d3c3ef", `Group3`="#f8d9b0", `Group4`="#edeac4", `Group5`="#fbdff4", `Group6`="#d2a0f8", `Group7`="#f49fab")
+
+cell_types = unique(cell_type_proportions$Cell_Type)
+meth_cells_p = list()
+gp2_cells_p = list()
+for (cell_t in cell_types){
+  plot_data = dplyr::filter(cell_type_proportions, Cell_Type == cell_t)
+  gp_levels = unique(new_samp_info$Sample_info$Meth_Cluster)[order(unique(new_samp_info$Sample_info$Meth_Cluster))]
+  p = ggplot(data=plot_data, aes(x=Methylation_Cluster, y=Proportion)) + geom_boxplot(aes(fill=Methylation_Cluster, color=Methylation_Cluster))  + 
+    scale_fill_manual(values = gene_clust_fill) + scale_color_manual(values = gene_clust_col) + ylim(0,max(plot_data$Proportion)+0.05*max(plot_data$Proportion)) +
+      labs(title=cell_t, y="Proportion Cell Type", x="Methylation Cluster") + 
+      theme(panel.background=element_rect(fill='transparent'),
+            axis.line = element_line(color="black"),
+            axis.text.x.bottom = element_text(size=10), 
+            axis.text = element_text(size=12),
+            plot.title = element_text(size=14),
+            legend.position = "none") +
+    stat_compare_means(aes(group=Methylation_Cluster), method=ifelse(length(gp_levels)>2, "kruskal.test", "wilcox.test"), comparisons = NULL) +
+      # stat_compare_means(aes(group=Methylation_Cluster), method=ifelse(length(gp_levels)>2, "kruskal.test", "wilcox.test"), label="p.format", label.x.npc = "center") +  
+      stat_compare_means(aes(group=Methylation_Cluster), method=ifelse(length(gp_levels)>2, "kruskal.test", "wilcox.test"), label="p.signif", label.x.npc = 0.5)
+  meth_cells_p[[cell_t]] = ggplotGrob(p)
+  gp2_data = dplyr::filter(plot_data, Methylation_Cluster=="Group2", Survival_Group %in% c("Long", "Short"))
+  gp_levels = c("Long", "Short")
+  gp2_p = ggplot(data=gp2_data, aes(x=Survival_Group, y=Proportion)) + geom_boxplot(aes(fill=Survival_Group, color=Survival_Group))  +  
+    scale_fill_manual(values = new_samp_info$colour_cat$Survival_Group) + scale_color_manual(values = new_samp_info$colour_cat_border$Survival_Group) + ylim(0,max(gp2_data$Proportion)+0.05*max(gp2_data$Proportion)) +
+      labs(title=cell_t, y=paste("Proportion of", gsub(" ", "", cell_t), "within Group2"), x="Survival") + 
+      theme(panel.background=element_rect(fill='transparent'),
+            axis.line = element_line(color="black"),
+            axis.text.x.bottom = element_text(size=10), 
+            axis.text = element_text(size=12),
+            plot.title = element_text(size=14),
+            legend.position = "none") +
+    stat_compare_means(aes(group=Survival_Group), method=ifelse(length(gp_levels)>2, "kruskal.test", "wilcox.test"), comparisons=NULL) 
+  gp2_cells_p[[cell_t]] = ggplotGrob(gp2_p) 
+}
+gt = arrangeGrob(grobs=meth_cells_p, ncol=5)
+# *************************
+# Fig 3 a
+# *************************
+grid.arrange(gt)
+
+```
+
+
+
+```{r plot-cibersort-prediction-by-cell-composition-by-cluster, fig.show='asis', fig.keep = 'all', fig.width=40, fig.height=15}
+cell_rna_proportions_all %<>% dplyr::mutate(Methylation_Cluster = sapply(Donor_Label, function(x) new_samp_info$Sample_info$Meth_Cluster[which(gsub("_T", "", new_samp_info$Sample_info$Sample_Name)==x)])) 
+cell_rna_proportions_all$Methylations_Cluster = factor(cell_rna_proportions_all$Methylation_Cluster, levels = unique(new_samp_info$Sample_info$Meth_Cluster)[order(unique(new_samp_info$Sample_info$Meth_Cluster))])
+cell_rna_proportions_comb %<>% dplyr::mutate(Methylation_Cluster = sapply(Donor_Label, function(x) new_samp_info$Sample_info$Meth_Cluster[which(gsub("_T", "", new_samp_info$Sample_info$Sample_Name)==x)])) 
+cell_rna_proportions_comb$Methylations_Cluster = factor(cell_rna_proportions_comb$Methylation_Cluster, levels = unique(new_samp_info$Sample_info$Meth_Cluster)[order(unique(new_samp_info$Sample_info$Meth_Cluster))])
+
+```
+
+
+\newpage  
+
+
+## Differential Methylation between Sample Groups.    
+
+```{r global-overview-tumour-by-cluster-comparison, fig.width=12, fig.height=16, fig.align='center', fig.keep='last', results='asis' }
+# **********
+# Differential methylation between the sample groups overview plot
+# *********
+if (sub_analysis==""){
+  group_comparisons = list(T1T2 = c("Group1", "Group2"),
+                           T1T3 = c("Group1", "Group3"),
+                           T1T4 = c("Group1", "Group4"),
+                           T2T3 = c("Group2", "Group3"),
+                           T2T4 = c("Group2", "Group4"),
+                           T3T4 = c("Group3", "Group4")
+                           )
+  group = "Meth_Cluster"
+} else if (length(grep("longVshort", sub_analysis))>0){
+  group = "Survival_Group"
+  group_comparisons = list(LongShort = c("Long", "Short"))
+  new_samp_info$Sample_info$Survival_Group = factor(new_samp_info$Sample_info$Survival_Group, levels = c("Long", "Short"))
+} else if (length(grep("chemIOVother", sub_analysis))>0){
+  group = "Treatment"
+  group_comparisons = list(LongShort = c("ChemoIO", "Other"))
+  new_samp_info$Sample_info$Treatment = factor(sample_info$Treatment, levels = c("chemo/immuno", "other"))
+} else {
+  group = "Sample_Group"
+  group_comparisons = list(LongShort = c("SCLC", "Neuro"))
+  new_samp_info$Sample_info$Sample_Group = droplevels(sample_info$Sample_Group)
+}
+if (file.exists(paste0(Stats_results_dir, study_prefix, "_ChAMP_limma_results.RData"))){
+  load(paste0(Stats_results_dir, study_prefix, "_ChAMP_limma_results.RData"))
+} else {
+  limma_diff_meth = list()
+}
+sample_groups = new_samp_info$Sample_info
+sample_groups$Sample_Name = gsub("_T", "", sample_groups$Sample_Name)
+sample_groups$Sample_Name = factor(sample_groups$Sample_Name, levels=colnames(meth_norm))
+sample_groups %<>% dplyr::arrange(Sample_Name)
+dm_sd = 0.1
+delta_beta = 0.2
+padj = 0.05
+promoter_regions = c("TSS1500", "TSS200", "5'UTR", "1stExon")
+summary_stats = NULL
+limma_analysis = TRUE
+for (gp_comp in names(group_comparisons)){
+  dm_norm = meth_data$B_probes[,which(colnames(meth_data$B_probes)%in%sample_groups$Sample_Name[which(sample_groups[,group]%in%group_comparisons[[gp_comp]])])]
+  dm_M = meth_data$M_probes[,which(colnames(meth_data$B_probes)%in%sample_groups$Sample_Name[which(sample_groups[,group]%in%group_comparisons[[gp_comp]])])]
+  dm_samp_group = sample_groups[which(sample_groups[,group]%in%group_comparisons[[gp_comp]]),]
+  if (!is.null(dm_sd)){
+    meth_dev_diff_B=NULL
+    if (dev_type=="mad"){
+      meth_dev_diff_B = apply(dm_norm, 1, mad)
+    } else if (dev_type=="sd"){
+      meth_dev_diff_B = apply(dm_norm, 1, sd)
+    } else {
+      message("To calculate the deviation dev_type needs to be 'sd' for standard deviation or 'mad' for median absolute deviation.")
+    }
+    if (!is.null(meth_dev_diff_B)){
+      meth_dev_diff_B = meth_dev_diff_B[which(meth_dev_diff_B>dm_sd)]
+      dm_norm = dm_norm[names(meth_dev_diff_B),]
+      dm_M = dm_M[names(meth_dev_diff_B),]
+    }
+  }
+  gp_name_A = group_comparisons[[gp_comp]][1]
+  gp_name_B = group_comparisons[[gp_comp]][2]
+  samplesA = which(dm_samp_group[,group]%in%gp_name_A)
+  samplesB = which(dm_samp_group[,group]%in%gp_name_B)
+  if (!gp_comp%in%names(limma_diff_meth)){
+    limma_diff_meth[[gp_comp]] = champ.DMP(beta=dm_M, pheno=droplevels(dm_samp_group[,group]), adjPVal = padj, arraytype = "EPIC")
+    gp_limma = limma_diff_meth[[gp_comp]][[intersect(grep(gp_name_A, names(limma_diff_meth[[gp_comp]])), grep(gp_name_B, names(limma_diff_meth[[gp_comp]])))]]
+    gp_limma %<>% dplyr::mutate(Mean_Beta_A = sapply(rownames(gp_limma), function(x) mean(dm_norm[x,samplesA])),
+                                Mean_Beta_B = sapply(rownames(gp_limma), function(x) mean(dm_norm[x,samplesB])))
+    gp_limma %<>% dplyr::mutate(Log2_FC = log2(Mean_Beta_A/Mean_Beta_B))
+    colnames(gp_limma) = gsub("Beta_A", paste0("Beta_", gp_name_A), gsub("Beta_B", paste0("Beta_", gp_name_B), colnames(gp_limma)))
+    limma_diff_meth[[gp_comp]][[intersect(grep(gp_name_A, names(limma_diff_meth[[gp_comp]])), grep(gp_name_B, names(limma_diff_meth[[gp_comp]])))]] = gp_limma
+  } else {
+    gp_limma = limma_diff_meth[[gp_comp]][[intersect(grep(gp_name_A, names(limma_diff_meth[[gp_comp]])), grep(gp_name_B, names(limma_diff_meth[[gp_comp]])))]]
+  }
+  fullstats_file = paste0(study_prefix, "_", substr(gp_comp,1,2), "_vs_", substr(gp_comp,3,4), "_sd", dm_sd, ifelse(limma_analysis, "_limma_", "_tumour_"), "fullstats.csv")
+  stats_file = gsub("full", "new_", fullstats_file)
+  if (file.exists(paste0(results_dir, "Differential_stats/Meth_Comparisons_", gp_comp, "/Diff_Analysis_DeltaBeta", delta_beta, "_Padj", padj, "/", fullstats_file))){
+    full_stats = as.data.frame(fread(paste0(results_dir, "Differential_stats/Meth_Comparisons_", gp_comp, "/Diff_Analysis_DeltaBeta", delta_beta, "_Padj", padj, "/", fullstats_file)))
+  } else {
+    full_stats = NULL
+  }
+  if (file.exists(paste0(results_dir, "Differential_stats/Meth_Comparisons_", gp_comp, "/Diff_Analysis_DeltaBeta", delta_beta, "_Padj", padj, "/", stats_file))){
+    new_stats = as.data.frame(fread(paste0(results_dir, "Differential_stats/Meth_Comparisons_", gp_comp, "/Diff_Analysis_DeltaBeta", delta_beta, "_Padj", padj, "/", stats_file)))
+  } else {
+    new_stats = NULL
+  }
+  if (!is.null(full_stats) & !is.null(new_stats)){
+    gp_stats = data.frame(Group_comparison = paste0(group_comparisons[[gp_comp]][1], "vs", group_comparisons[[gp_comp]][2]),
+                          Num_HypoMeth_Probes = nrow(dplyr::filter(full_stats, Status=="Hypo-methylated")),
+                          Num_HyperMeth_Probes = nrow(dplyr::filter(full_stats, Status=="Hyper-methylated")),
+                          Total_Probes = length(unique(full_stats$Probe_name)),
+                          Num_Hypo_Genes = length(unique(dplyr::filter(new_stats, Status=="Hypo-methylated")$UCSC_RefGene_Name)),
+                          Num_Hyper_Genes = length(unique(dplyr::filter(new_stats, Status=="Hyper-methylated")$UCSC_RefGene_Name)),
+                          Num_common_genes = length(intersect(unique(dplyr::filter(new_stats, Status=="Hyper-methylated")$UCSC_RefGene_Name), unique(dplyr::filter(new_stats, Status=="Hypo-methylated")$UCSC_RefGene_Name))),
+                          Total_Genes = length(unique(new_stats$UCSC_RefGene_Name)),
+                          Num_Hypo_Promoter_Genes = length(unique(dplyr::filter(new_stats, Status=="Hypo-methylated", UCSC_RefGene_Group%in%promoter_regions)$UCSC_RefGene_Name)),
+                          Num_Hyper_Promoter_Genes = length(unique(dplyr::filter(new_stats, Status=="Hyper-methylated", UCSC_RefGene_Group%in%promoter_regions)$UCSC_RefGene_Name)),
+                          Num_common_promoter_genes = length(intersect(unique(dplyr::filter(new_stats, Status=="Hyper-methylated", UCSC_RefGene_Group%in%promoter_regions)$UCSC_RefGene_Name), unique(dplyr::filter(new_stats, Status=="Hypo-methylated", UCSC_RefGene_Group%in%promoter_regions)$UCSC_RefGene_Name))),
+                          Total_Promoter_Genes = length(unique(dplyr::filter(new_stats, UCSC_RefGene_Group%in%promoter_regions)$UCSC_RefGene_Name)))
+    summary_stats = rbind(summary_stats, gp_stats)
+  }
+}
+if (!is.null(summary_stats)) {
+  write_tsv(summary_stats, file=paste0(results_dir, "Differential_stats/", group, "_Comparisons_Summary.tsv"))
+}
+
+```
+
+
+```{r plot-pathways-from-global-overview-meth_clusters-all, fig.width=24, fig.height=16, fig.align='center', fig.keep='last', results='asis' }
+# **********
+# Differential methylation pathways between the sample groups 
+# *********
+path_types = c("Hallmark", "C2") # "GO", "Reactome", "Hallmark", "C2" c("Nabet_Other", "Nabet_Hall")
+promoter_probes = c("TSS1500", "TSS200", "5'UTR", "1stExon")
+seed.value = 553
+set.seed(seed.value)
+RNASeq_TMM = as.data.frame(fread(paste0(working_dir, "Results/RNA_genes_of_interest_full_48Samp.tsv")))
+RNASeq_TMM = RNASeq_TMM[, c(1,2,which(colnames(RNASeq_TMM)%in%new_samp_info$Sample_info$Sample_Name))]
+num_mult = 1
+all_diff_genes = list()
+gene_type = "promoter"
+num_diff = list()
+num_promoter = list()
+num_genes = list()
+num_exp = list()
+path_fc_delta = list()
+# set flag to use mean values, if FALSE will use median values
+use_mean = TRUE
+# set flag to filter for genes, between the groups, with more than one differentially methylated probe in the promoter region.
+probe_filter = FALSE
+gene_set_filter = FALSE
+for (path_type in path_types){
+  for (gp_comp in names(group_comparisons)){
+    # import annotated limma stats for genes (all gene regions)
+    diff_genes = data.frame(fread(file = paste0(results_dir, "Differential_stats/Meth_Comparisons_", gp_comp, "/Diff_Analysis_DeltaBeta", delta_beta, "_Padj", padj, "/Fielding_-_Lung_All_Seq_", substring(gp_comp, 1,2), "_vs_", substring(gp_comp, 3,4),
+                                                ifelse(!is.null(dm_sd), paste0("_sd", dm_sd),""), ifelse(limma_analysis, "_limma", ""), "_new_stats.csv")))
+    num_diff[[paste(path_type, gp_comp, sep="_")]] = length(unique(diff_genes$UCSC_RefGene_Name))
+    # filter diff genes to include only probes in the promoter regions
+    diff_genes %<>% dplyr::filter(UCSC_RefGene_Group%in%promoter_probes)
+    num_promoter[[paste(path_type, gp_comp, sep="_")]] = length(unique(diff_genes$UCSC_RefGene_Name))
+    # ********************
+    # only retain those genes with a min count across the samples
+    # ********************
+    gp_samples = new_samp_info$Sample_info$Sample_Name[grep(paste(group_comparisons[[gp_comp]], collapse="|"), new_samp_info$Sample_info$Meth_Cluster)]
+    gp_num = c(length(which(new_samp_info$Sample_info$Sample_Name[grep(group_comparisons[[gp_comp]][1], new_samp_info$Sample_info$Meth_Cluster)]%in%colnames(RNASeq_TMM))),
+               length(which(new_samp_info$Sample_info$Sample_Name[grep(group_comparisons[[gp_comp]][2], new_samp_info$Sample_info$Meth_Cluster)]%in%colnames(RNASeq_TMM))))
+    gp_rna_seq = dplyr::select(RNASeq_TMM, `Associated Gene Name`, all_of(gp_samples[which(gp_samples%in%colnames(RNASeq_TMM))]))
+    gp_rna_seq = gp_rna_seq[which(rowSums(gp_rna_seq[, 2:ncol(gp_rna_seq)])>4),] 
+    diff_genes %<>% dplyr::filter(UCSC_RefGene_Name%in%gp_rna_seq$`Associated Gene Name`)
+    num_exp[[paste(path_type, gp_comp, sep="_")]] = length(unique(diff_genes$UCSC_RefGene_Name))
+    delta_values = sapply(unique(diff_genes$UCSC_RefGene_Name), function(x) ifelse(use_mean,
+                                                                                   mean((dplyr::filter(diff_genes, UCSC_RefGene_Name==x) %>% dplyr::filter(!duplicated(Probe_name)))$Delta_change),
+                                                                                   median((dplyr::filter(diff_genes, UCSC_RefGene_Name==x) %>% dplyr::filter(!duplicated(Probe_name)))$Delta_change)))
+    delta_values = delta_values[order(delta_values, decreasing = TRUE)]
+    fc_values = NULL
+    if ("Log2_FC" %in% colnames(diff_genes)){
+      for (ucsc_ref in unique(diff_genes$UCSC_RefGene_Name)){
+        if (use_mean){
+          gene_values = dplyr::filter(diff_genes, UCSC_RefGene_Name==ucsc_ref)
+          fc_values = c(fc_values, mean(gene_values$Log2_FC[which(!duplicated(gene_values$Probe_name))]))
+        } else {
+          gene_values = dplyr::filter(diff_genes, UCSC_RefGene_Name==ucsc_ref)
+          fc_values = c(fc_values, median(gene_values$Log2_FC[which(!duplicated(gene_values$Probe_name))]))
+        }
+      }
+      names(fc_values) = unique(diff_genes$UCSC_RefGene_Name)
+    }
+    fc_values = fc_values[order(fc_values, decreasing=TRUE)]
+    pos_values = seq(0, length(which(fc_values>0))*0.000001, 0.000001)
+    neg_values = -1*seq(0, length(which(fc_values<0))*0.000001, 0.000001)
+    scale_values = c(pos_values[order(pos_values, decreasing=TRUE)], neg_values)
+    scale_values= c(head(scale_values, n=length(which(fc_values>0))), tail(scale_values, n=length(which(fc_values<0))))
+    fc_values = (fc_values + scale_values)
+    if (!gp_comp%in% names(path_fc_delta)){
+      path_fc_delta[[gp_comp]] = data.frame(Hugo_Symbol = names(delta_values),
+                                            Delta_value = delta_values,
+                                            Log2_FC = sapply(names(delta_values), function(x) fc_values[x]))
+    }
+    message(paste("### Pathway Analysis of Genes from Differential Analyses in", ifelse(gene_type=="promoter", "Gene Promoter", "All Gene"), "Regions -", substring(gp_comp, 1,2), "vs", substring(gp_comp, 3,4), ".  \n\n", sep=" "))
+    num_genes[[paste(path_type, gp_comp, sep="_")]] = length(delta_values)
+    perform.pathway.analysis (genes = unique(diff_genes$UCSC_RefGene_Name),
+                              delta.values = delta_values,
+                              fc.values = fc_values,
+                              pathway.type = path_type,
+                              subgroup.comp = c(group_comparisons[[gp_comp]][1], group_comparisons[[gp_comp]][2]),
+                              gene.type = gene_type,
+                              use.mean = use_mean,
+                              gene.set.filter = gene_set_filter,
+                              min.set = ifelse(path_type=="Hallmark", 30, ifelse(length(grep("Nabet", path_type))>0, 2, 100)), 
+                              results.dir = paste0(RData_results_dir, "Plots/Meth_Clust_Diff_Analysis/Diff_Analysis_DeltaBeta", delta_beta, "_Padj", padj, "/Pathway_Analysis/Promoter_Gene_Regions/", ifelse(use_mean, "Mean", "Median"), "_Values/",
+                                                  "No_Filter_", seed.value, "/")
+                              )
+    # store the edited differentially methylated probe information into one list
+    if (!gp_comp%in%names(all_diff_genes)){
+      all_diff_genes[[gp_comp]] = diff_genes
+    }
+  }
+}
+
+```
+
+
+
+```{r look-at-cluster-methylation-across-pathways-per-cluster, fig.width = 25, fig.height= 30 }
+gene_set1 = paste0(working_dir, "Sample_Sheets/Pathway_Gene_Sets/h.all.v2024.1.Hs.symbols.gmt")
+hallmark_paths = read.gmt(gene_set1)
+gene_set2 = paste0(working_dir, "Sample_Sheets/Pathway_Gene_Sets/c2.all.v2024.1.Hs.symbols.gmt")
+c2_paths = read.gmt(gene_set2)
+full_paths = rbind(hallmark_paths, c2_paths)
+full_paths %<>% dplyr::mutate(Cluster_gene = sapply(gene, function(x) ifelse(x%in%genes_in_clust, "TRUE", "FALSE")),
+                              T1T2 = rep("", nrow(full_paths)),
+                              T1T3 = rep("", nrow(full_paths)),
+                              T1T4 = rep("", nrow(full_paths)),
+                              T2T3 = rep("", nrow(full_paths)),
+                              T2T4 = rep("", nrow(full_paths)),
+                              T3T4 = rep("", nrow(full_paths)))
+path_genes = list()
+min_path = list()
+analysis_of_choice = paste0(ifelse(use_mean, "Mean", "Median"), "_Values/No_Filter_", seed.value , "/")
+for (gp in names(group_comparisons)) {
+  gp_hall_data = as.data.frame(fread(paste0(RData_results_dir, "Plots/Meth_Clust_Diff_Analysis/Diff_Analysis_DeltaBeta", delta_beta, "_Padj", padj, "/Pathway_Analysis/Promoter_Gene_Regions/", analysis_of_choice, "Fielding_-_Lung_All_Seq_",
+                                            group_comparisons[[gp]][1], "_vs_", group_comparisons[[gp]][2], ifelse(limma_analysis, "_limma", ""), ifelse(use_mean, "_mean", "_median"),
+                                            "_no_filter", "_Promoter_Regions_Hallmark_GSEA.csv")))
+  gp_c2_data = as.data.frame(fread(paste0(RData_results_dir, "Plots/Meth_Clust_Diff_Analysis/Diff_Analysis_DeltaBeta", delta_beta, "_Padj", padj, "/Pathway_Analysis/Promoter_Gene_Regions/", analysis_of_choice, "Fielding_-_Lung_All_Seq_",
+                                          group_comparisons[[gp]][1], "_vs_", group_comparisons[[gp]][2], ifelse(limma_analysis, "_limma", ""), ifelse(use_mean, "_mean", "_median"),
+                                          "_no_filter", "_Promoter_Regions_C2_GSEA.csv")))
+  gp_data = rbind(gp_hall_data, gp_c2_data)
+  for (path in unique(full_paths$term)){
+    min_pval = 1
+    path_data = dplyr::filter(gp_data, ID==path)
+    if (nrow(path_data)>0){
+      min_path[[path]] = ifelse(min_pval>path_data$p.adjust, gp, min_path[[path]])
+      min_pval = ifelse(min_pval>path_data$p.adjust, path_data$p.adjust, min_pval)
+      p_genes = unlist(strsplit(path_data$core_enrichment[which(path_data$ID==path)], "/"))
+      if (length(p_genes)>0){
+        full_paths[which(full_paths$term==path&full_paths$gene%in%p_genes),gp] = "TRUE"
+      }
+    }
+  }
+}
+full_paths %<>% dplyr::mutate(T1T2 = sapply(T1T2, function(x) ifelse(x=="TRUE", x, "FALSE")),
+                              T1T3 = sapply(T1T3, function(x) ifelse(x=="TRUE", x, "FALSE")),
+                              T1T4 = sapply(T1T4, function(x) ifelse(x=="TRUE", x, "FALSE")),
+                              T2T3 = sapply(T2T3, function(x) ifelse(x=="TRUE", x, "FALSE")),
+                              T2T4 = sapply(T2T4, function(x) ifelse(x=="TRUE", x, "FALSE")),
+                              T3T4 = sapply(T3T4, function(x) ifelse(x=="TRUE", x, "FALSE")))
+full_paths %<>% dplyr::mutate(Num_comp = apply(full_paths, 1, function(x) length(which(x[grep("T", colnames(full_paths), ignore.case = FALSE)]=="TRUE"))))
+get_probes = function(x, gene){
+  probes = x$Probe_name[which(x$UCSC_RefGene_Name==gene)]
+  return(probes)
+}
+path_avg = NULL
+path_rna_avg = NULL
+immune_pways = c("HALLMARK_ALLOGRAFT_REJECTION", "HALLMARK_INTERFERON_GAMMA_RESPONSE", "HALLMARK_INTERFERON_ALPHA_RESPONSE", "ZHENG_BOUND_BY_FOXP3", "MARSON_BOUND_BY_FOXP3_UNSTIMULATED", "MARSON_BOUND_BY_FOXP3_STIMULATED", "REACTOME_ADAPTIVE_IMMUNE_SYSTEM",
+                 "HALLMARK_IL2_STAT5_SIGNALING", "HALLMARK_TNFA_SIGNALING_VIA_NFKB", "FULCHER_INFLAMMATORY_RESPONSE_LECTIN_VS_LPS_DN", "MATSUDA_NATURAL_KILLER_DIFFERENTIATION", "REACTOME_CYTOKINE_SIGNALING_IN_IMMUNE_SYSTEM")
+immune_pway_names = c("ALLOGRAFT_REJECTION", "INTERFERON_GAMMA_RESPONSE", "INTERFERON_ALPHA_RESPONSE", "FOXP3_TARGETS", "FOXP3_TARGETS_UNSTIMULATED", "FOXP3_TARGETS_STIMULATED", "ADAPTIVE_IMMUNE_SYSTEM",
+                 "IL2_STAT5_SIGNALING", "TNFA_SIGNALING_VIA_NFKB", "INFLAMMATORY_RESPONSE", "NATURAL_KILLER_DIFFERENTIATION", "CYTOKINE_SIGNALING_IN_IMMUNE_SYSTEM")
+stroma_pways = c("NABA_MATRISOME", "REACTOME_EXTRACELLULAR_MATRIX_ORGANIZATION", "DURAND_STROMA_S_UP")
+stroma_pway_names = c("MATRISOME", "EXTRACELLULAR_MATRIX_ORGANIZATION", "STROMA")
+tumour_pways = c("BENPORATH_ES_WITH_H3K27ME3", "MEISSNER_BRAIN_HCP_WITH_H3K4ME3_AND_H3K27ME3", "BENPORATH_PRC2_TARGETS","HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "WONG_ADULT_TISSUE_STEM_MODULE", "NUYTTEN_EZH2_TARGETS_UP",
+                 "REACTOME_CELL_CYCLE", "BENPORATH_MYC_MAX_TARGETS", "DANG_BOUND_BY_MYC",  "HALLMARK_MYC_TARGETS_V1", "BENPORATH_NANOG_TARGETS", "BENPORATH_SOX2_TARGETS")
+tumour_pway_names = c("H3K27ME3", "H3K4ME3_AND_H3K27ME3", "PRC2_TARGETS", "EMT", "STEM_CELLS", "EZH2_TARGETS",
+                      "CELL_CYCLE", "MYC_MAX_TARGETS", "BOUND_BY_MYC", "MYC_TARGETS", "NANOG_TARGETS", "SOX2_TARGETS")
+pathways_of_interest = c(immune_pways, stroma_pways, tumour_pways)
+pathway_names = c(immune_pway_names, stroma_pway_names, tumour_pway_names)
+full_int_paths = dplyr::filter(full_paths, term %in% pathways_of_interest) %>% dplyr::mutate(term = sapply(term, function(x) pathway_names[which(pathways_of_interest==x)]))
+RNASeq_TMM = as.data.frame(fread(paste0(working_dir, "Results/RNA_genes_of_interest_full_48Samp.tsv")))
+RNASeq_TMM = RNASeq_TMM[, c(1,2,which(colnames(RNASeq_TMM)%in%new_samp_info$Sample_info$Sample_Name))]
+
+M_values = FALSE
+for (path in pathway_names){
+  path_genes[[path]] = dplyr::filter(full_int_paths, term==path, Num_comp>=1)$gene
+  for (gene in path_genes[[path]]){
+    # get probes for promoter regions
+    gene_probes = unique(unlist(lapply(all_diff_genes, function(x) get_probes(x, gene))))
+    if (M_values){
+      gene_meth = meth_M_norm[gene_probes,]
+    } else {
+      gene_meth = meth_norm[gene_probes,]
+    }
+    if(!is.null(gene_meth)){
+      gene_rna = dplyr::filter(RNASeq_TMM, `Associated Gene Name`==gene)
+      if (nrow(gene_rna)>1){
+        gene_rna = rbind(gene_rna, c(gene_rna$`Gene Name`[1], gene_rna$`Associated Gene Name`[1], apply(gene_rna[, 3:ncol(gene_rna)], 2, max)))
+      }
+      gene_rna_avg = data.frame(Pathway = path,
+                                Gene = gene,
+                                Group1 = median(log2(as.numeric(dplyr::select(gene_rna[nrow(gene_rna),], new_samp_info$Sample_info$Sample_Name[intersect(which(new_samp_info$Sample_info$Meth_Cluster=="Group1"), which(new_samp_info$Sample_info$Sample_Name%in%colnames(RNASeq_TMM)))]))+1)), 
+                                Group2 = median(log2(as.numeric(dplyr::select(gene_rna[nrow(gene_rna),], new_samp_info$Sample_info$Sample_Name[intersect(which(new_samp_info$Sample_info$Meth_Cluster=="Group2"), which(new_samp_info$Sample_info$Sample_Name%in%colnames(RNASeq_TMM)))]))+1)),
+                                Group3 = median(log2(as.numeric(dplyr::select(gene_rna[nrow(gene_rna),], new_samp_info$Sample_info$Sample_Name[intersect(which(new_samp_info$Sample_info$Meth_Cluster=="Group3"), which(new_samp_info$Sample_info$Sample_Name%in%colnames(RNASeq_TMM)))]))+1)),
+                                Group4 = median(log2(as.numeric(dplyr::select(gene_rna[nrow(gene_rna),], new_samp_info$Sample_info$Sample_Name[intersect(which(new_samp_info$Sample_info$Meth_Cluster=="Group4"), which(new_samp_info$Sample_info$Sample_Name%in%colnames(RNASeq_TMM)))]))+1)))
+      path_rna_avg = rbind(path_rna_avg, gene_rna_avg)
+      if (is.matrix(gene_meth)){
+        if (nrow(gene_meth)>1){
+          gene_avg = data.frame(Pathway = path,
+                                Gene = gene,
+                                Group1 = median(apply(gene_meth[ ,gsub("_T", "", new_samp_info$Sample_info$Sample_Name[which(new_samp_info$Sample_info$Meth_Cluster=="Group1")])], 1, median)),
+                                Group2 = median(apply(gene_meth[ ,gsub("_T", "", new_samp_info$Sample_info$Sample_Name[which(new_samp_info$Sample_info$Meth_Cluster=="Group2")])], 1, median)),
+                                Group3 = median(apply(gene_meth[ ,gsub("_T", "", new_samp_info$Sample_info$Sample_Name[which(new_samp_info$Sample_info$Meth_Cluster=="Group3")])], 1, median)),
+                                Group4 = median(apply(gene_meth[ ,gsub("_T", "", new_samp_info$Sample_info$Sample_Name[which(new_samp_info$Sample_info$Meth_Cluster=="Group4")])], 1, median)))
+          path_avg = rbind(path_avg, gene_avg)
+        }
+      } else if (is.vector(gene_meth)) {
+        gene_avg = data.frame(Pathway = path,
+                              Gene = gene,
+                              Group1 = median(gene_meth[gsub("_T", "", new_samp_info$Sample_info$Sample_Name[which(new_samp_info$Sample_info$Meth_Cluster=="Group1")])]),
+                              Group2 = median(gene_meth[gsub("_T", "", new_samp_info$Sample_info$Sample_Name[which(new_samp_info$Sample_info$Meth_Cluster=="Group2")])]),
+                              Group3 = median(gene_meth[gsub("_T", "", new_samp_info$Sample_info$Sample_Name[which(new_samp_info$Sample_info$Meth_Cluster=="Group3")])]),
+                              Group4 = median(gene_meth[gsub("_T", "", new_samp_info$Sample_info$Sample_Name[which(new_samp_info$Sample_info$Meth_Cluster=="Group4")])]))
+        path_avg = rbind(path_avg, gene_avg)
+      }
+    }
+  }
+}
+path_types = unique(path_avg$Pathway)
+path_rna_avg %<>% dplyr::filter(!is.na(Group1))
+
+```
+
+
+```{r plot-cluster-methylation-across-pathways-per-cluster-boxplots, fig.width = 25, fig.height= 30 }
+sep_path = list()
+rna_path = list()
+meth_paths_df = NULL
+rna_paths_df = NULL
+for (path_t in path_types){
+  h_path_num = nrow(dplyr::filter(full_int_paths, term==path_t))
+  p_path_num = nrow(dplyr::filter(path_avg, Pathway==path_t))
+  r_path_num = nrow(dplyr::filter(path_rna_avg, Pathway==path_t))
+  plot_data = melt(dplyr::filter(path_avg, Pathway==path_t), variable.name = "Meth_Cluster", value.name="Median_Beta")
+  meth_paths_df = rbind(meth_paths_df,
+                        data.frame(Pathway = unique(plot_data$Pathway),
+                                   Group1_Path_Med = median(plot_data$Median_Beta[which(plot_data$Meth_Cluster=="Group1")]),
+                                   Group2_Path_Med = median(plot_data$Median_Beta[which(plot_data$Meth_Cluster=="Group2")]),
+                                   Group3_Path_Med = median(plot_data$Median_Beta[which(plot_data$Meth_Cluster=="Group3")]),
+                                   Group4_Path_Med = median(plot_data$Median_Beta[which(plot_data$Meth_Cluster=="Group4")])))
+  plot_rna_data = melt(dplyr::filter(path_rna_avg, Pathway==path_t), variable.name = "Meth_Cluster", value.name="Median_Log2+1")
+  rna_paths_df = rbind(rna_paths_df,
+                       data.frame(Pathway = unique(plot_rna_data$Pathway),
+                                  Group1_Path_Med = median(plot_rna_data$`Median_Log2+1`[which(plot_rna_data$Meth_Cluster=="Group1")]),
+                                  Group2_Path_Med = median(plot_rna_data$`Median_Log2+1`[which(plot_rna_data$Meth_Cluster=="Group2")]),
+                                  Group3_Path_Med = median(plot_rna_data$`Median_Log2+1`[which(plot_rna_data$Meth_Cluster=="Group3")]),
+                                  Group4_Path_Med = median(plot_rna_data$`Median_Log2+1`[which(plot_rna_data$Meth_Cluster=="Group4")])))
+}
+
+```
+
+```{r pathways-heatmap, fig.height=14, fig.width=15}
+path_hmaps = list()
+path_mat = list()
+for (p_hmap in c("Meth", "RNA")){
+  if (p_hmap == "Meth") {
+    # create zscores for the methylation data
+    path_mat[[p_hmap]] = as.matrix(meth_paths_df[2:ncol(meth_paths_df)])
+    rownames(path_mat[[p_hmap]]) = gsub("_", " ", meth_paths_df$Pathway)
+  } else {
+    # create zscores for the RNA data
+    path_mat[[p_hmap]] = as.matrix(rna_paths_df[2:ncol(rna_paths_df)])
+    rownames(path_mat[[p_hmap]]) = gsub("_", " ", rna_paths_df$Pathway)
+  }
+  colnames(path_mat[[p_hmap]]) = gsub("_Path_Med", "", colnames(path_mat[[p_hmap]]))
+  path_mat[[p_hmap]] = t(apply(path_mat[[p_hmap]], 1, function(x) (x-mean(x))/sd(x)))
+  path_col = c("lightblue1", "cadetblue3", "black", "tan4", "darkgoldenrod2")
+  path_hmaps[[p_hmap]] = grid.grabExpr(draw(Heatmap(path_mat[[p_hmap]],
+                                                    col=colorRamp2(c(-2, -1, 0, 1, 2), path_col),
+                                                    cluster_rows=FALSE,
+                                                    cluster_columns=FALSE,
+                                                    column_title_gp = gpar(fontsize=18),
+                                                    row_names_side="left",
+                                                    row_title_gp = gpar(fontsize=24),
+                                                    row_names_gp=gpar(fontsize=20),
+                                                    row_names_max_width = unit(15, "cm"),
+                                                    row_split = c(rep("Immune", length(immune_pways)), rep("Stroma", length(stroma_pways)), rep("Tumour", length(tumour_pways))),
+                                                    row_gap = unit(10, "mm"),
+                                                    column_title=paste(gsub(" DNA Methylation", "", study_name), "-", ifelse(p_hmap=="RNA", "RNA", "Methylation"), "Pathway Scores"),
+                                                    column_names_centered = TRUE,
+                                                    column_names_gp = gpar(fontsize=20),
+                                                    column_names_rot = 0,
+                                                    show_column_names = TRUE,
+                                                    heatmap_legend_param = list(title="Z-score",
+                                                                                title_gp=gpar(fontsize=18, fontface="bold"),
+                                                                                labels_gp=gpar(fontsize=14),
+                                                                                legend_height=unit(4,"cm"),
+                                                                                grid_width=unit(8,"mm"),
+                                                                                just=c("right", "top"))), 
+                                            padding = unit(c(1,18,1,10),"mm")))
+}
+# *************************
+# Fig 2 b
+# *************************
+grid.arrange(path_hmaps$Meth)
+grid.arrange(path_hmaps$RNA)
+
+```
+
+
+
+```{r create-heatmap-annotations-of-all-clusters, fig.width=20, fig.height=4}
+col.annotations = dplyr::select(dplyr::arrange(new_samp_info$Sample_info, Meth_Index), Treatment, Survival_Group, Tumour_Content, Sample_Group, Paper_Regions_M, Meth_Cluster) # Var_ALL_2000_M
+rownames(col.annotations) = new_samp_info$Sample_info$Sample_Name
+hm.zero = matrix(nrow=0, ncol = nrow(col.annotations))
+colnames(hm.zero) = rownames(col.annotations)
+anno.cols = list()
+left.pad = 15
+right.pad = 5
+for (col in colnames(col.annotations)){
+  anno.cols[[col]] = new_samp_info$colour_cat_border[[col]]
+}
+
+ha = HeatmapAnnotation(df = col.annotations,
+                       col = anno.cols,
+                       annotation_height=unit(10, "mm"),
+                       annotation_width=unit(10, "mm"),
+                       annotation_name_gp = gpar(cex=0.9),
+                       show_legend = FALSE
+                       )
+clust_hm = Heatmap(hm.zero,
+                   name = "All Sample Clusters",
+                   cluster_rows=FALSE,
+                   cluster_columns=FALSE,
+                   row_names_side="left",
+                   row_names_gp=gpar(fontsize=6),
+                   bottom_annotation=ha,
+                   show_column_names = FALSE, #ifelse(length(samp.cat)<=16, TRUE, FALSE),
+                   # column_names_gp = gpar(fontsize=samp.font.size),
+                   column_split = factor(samp_clust),
+                   show_heatmap_legend = FALSE
+                   )
+clust_grob = grid.grabExpr(draw(clust_hm, padding = unit(c(1,left.pad,1,right.pad),"mm")))
+# *************************
+# Fig S2
+# *************************
+plot_grid(clust_grob)
+
+```
+  
+
+\newpage  
+ 
+# Examine Methylation of Specific Genes of Interest.  
+
+
+```{r set-up-gene-data, fig.width=8, fig.height=4, fig.align='center' }
+# **********
+# for methylation data
+# **********
+genes_for_gene_info = rbind(genes_of_interest$sclc, genes_of_interest$treatment, genes_of_interest$oncogene, genes_of_interest$immune, genes_of_interest$meth_enzyme, genes_of_interest$parpi, genes_of_interest$special, genes_of_interest$fibroblast2, 
+                            genes_of_interest$amp, dplyr::filter(genes_set_data, Hugo_Symbol=="REST"), genes_of_interest$cytolytic, genes_of_interest$apm, genes_of_interest$epithelial, genes_of_interest$mesenchymal, genes_of_interest$extra)
+genes_for_gene_info = genes_for_gene_info[!duplicated(genes_for_gene_info),]
+if (!is.null(genes_for_gene_info)){
+  gene_info = list()
+  for (gene in genes_for_gene_info$Hugo_Symbol){
+    chr_probe_info = dplyr::filter(Probe_info,
+                                   IlmnID %in% gene_Probe_info$IlmnID[which(gene_Probe_info$Hugo_Symbol==gene)])
+    if (length(grep(gene, as.character(chr_probe_info$UCSC_RefGene_Name)))>0){
+      message(paste("Loading gene information for:", gene))
+      gene_info[[gene]] = load.gene.info(chr_probe_info, gene)
+    }
+  }
+}
+genes_filtered_1 = filter(genes_for_gene_info, !Hugo_Symbol%in%names(gene_info)) %>%
+  mutate(Reason = "No entry in probe information file")
+
+genes_for_gene_info %<>% filter(Hugo_Symbol%in%names(gene_info))
+
+```
+
+\newpage
+
+## Heatmaps Specific Genes of Interest.
+
+In this section heatmaps for the list of genes of interest are created.  The heatmaps are supervised, based on probes ordered by chromosome position and the samples ordered on their tumour copy number classification.  
+
+```{r heatmap-of-gene-probes-by-gene-gp, fig.width=16, fig.height=12, fig.align='center', results='asis' }
+# check methylation data has suffix in cluster samples
+if(length(grep("_T", colnames(meth_norm)))==0){
+  colnames(meth_norm) = paste0(colnames(meth_norm), "_T")
+}
+RNASeq_TMM = as.data.frame(fread(paste0(working_dir, "Results/RNA_genes_of_interest_full_48Samp.tsv")))
+RNASeq_TMM_all = as.data.frame(fread(paste0(working_dir, "Results/RNA_genes_of_interest_full_111Samp.tsv")))
+# two transcripts for TAP2 removing transcript with fewer than 5 counts across all SCLC samples
+RNASeq_TMM_all = RNASeq_TMM_all[which(!RNASeq_TMM_all$`Gene Name` == "ENSG00000250264"),]
+rna_study_data = as.data.frame(fread(paste0(working_dir, "Results/RNA_AllLung_samples_withRNA.tsv")))
+rna_study_data = rna_study_data[which(!duplicated(rna_study_data)),]
+# remove 2 samples that are duplicated so all donors are unique
+rna_study_data %<>% dplyr::filter(!Sample%in%c("4400119", "4400067"))
+if(length(grep("_T", colnames(RNASeq_TMM_all)))==0){
+  colnames(RNASeq_TMM_all)[3:ncol(RNASeq_TMM_all)] = paste0(colnames(RNASeq_TMM_all)[3:ncol(RNASeq_TMM_all)], "_T")
+}
+if(length(grep("_T", colnames(RNASeq_TMM)))==0){
+  colnames(RNASeq_TMM)[3:ncol(RNASeq_TMM)] = paste0(colnames(RNASeq_TMM)[3:ncol(RNASeq_TMM)], "_T")
+}
+gene_samp_info = new_samp_info$Sample_info
+rna_cluster_data = dplyr::filter(cluster_data, Donor_Label%in%colnames(RNASeq_TMM))
+rna_gene_samp_info = gene_samp_info[rna_cluster_data$Donor_Label, ]
+rna_gene_samp_info$Sample_Name = factor(rna_gene_samp_info$Sample_Name, levels = rna_gene_samp_info$Sample_Name)
+rna_meth_norm = meth_norm[,rna_cluster_data$Donor_Label]
+RNASeq_TMM = RNASeq_TMM_all[, c(colnames(RNASeq_TMM_all)[c(1,2)],colnames(rna_meth_norm))]
+gene_gp_heatmap = list()
+clust.name = "Meth_Cluster"
+hm_gene_sets = c("sclc")
+gene_samp_info = gene_samp_info[names(new_samp_info$Sample_Clusters[[clust.name]]),]
+gene_samp_info$Sample_Name = factor(gene_samp_info$Sample_Name, levels = names(new_samp_info$Sample_Clusters[[clust.name]]))
+z_score = FALSE
+add_annos = c("Survival_Group", "Tumour_Content") 
+for (gene_set in hm_gene_sets){
+  gene_set_genes = dplyr::filter(genes_of_interest[[gene_set]], !CHR=="chrX") %>% dplyr::arrange(as.numeric(gsub("chr", "", CHR)))
+  if (gene_set == "sclc") {
+    gene_set_genes %<>% dplyr::filter(!Hugo_Symbol=="REST")
+  }
+  gene_gp_heatmap[[gene_set]] = draw.gene.heatmap(meth.data = rna_meth_norm,
+                                                  samp.info = rna_gene_samp_info,
+                                                  RNA.info = RNASeq_TMM,
+                                                  cat.cols = new_samp_info$colour_cat_border,
+                                                  gene.info = gene_info[c(gene_set_genes$Hugo_Symbol)],
+                                                  gene = ifelse(length(gene_set_genes$Hugo_Symbol)>1, "all", gene_set_genes$Hugo_Symbol),
+                                                  meth.sub = clust.name,
+                                                  gene.meth.sub = ifelse(!is.null(region_probes), "Paper_Regions_M", "Var_ALL_2000_M"), 
+                                                  status = gene_set,
+                                                  zscore = z_score,
+                                                  add.annos = add_annos)
+}
+# *************************
+# Fig 2 a
+# *************************
+grid.arrange(gene_gp_heatmap$sclc$heatmap)
+
+```
+
+
+```{r create-rna-seq-heatmaps }
+hm_plots = c("Meth_Cluster")
+rna_gene_sets = c("NE", "non-NE")
+z_score=TRUE
+meth_var_order = FALSE
+if (meth_var_order){
+  meth_var = ifelse(!is.null(region_probes), "Paper_Regions_M", "Var_ALL_2000_M")
+  new_samp_info$Sample_info$Sample_Name = factor(new_samp_info$Sample_info$Sample_Name, levels=names(new_samp_info$Sample_Clusters[[meth_var]]))
+  new_samp_info$Sample_info %<>% dplyr::arrange(Sample_Name)
+  annotations = data.frame(Histology = new_samp_info$Sample_info$Sample_Group,
+                           Sub_Group = new_samp_info$Sample_info[,meth_var],
+                           Meth_Cluster = new_samp_info$Sample_info$Meth_Cluster
+                           )
+  rownames(annotations) = new_samp_info$Sample_info$Sample_Name
+  anno.cols = new_samp_info$colour_cat_border[c("Meth_Cluster", "Sample_Group", meth_var)]
+  names(anno.cols) = c("Meth_Cluster", "Histology", "Sub_Group")
+} else {
+  meth_var = "Meth_Cluster"
+  annotations = data.frame(Survival = new_samp_info$Sample_info$Survival_Group[order(new_samp_info$Sample_info$Meth_Index)],
+                           Histology = new_samp_info$Sample_info$Sample_Group[order(new_samp_info$Sample_info$Meth_Index)],
+                           Sub_Group = new_samp_info$Sample_info$Meth_Cluster[order(new_samp_info$Sample_info$Meth_Index)]
+                           )
+  rownames(annotations) = new_samp_info$Sample_info$Sample_Name[order(new_samp_info$Sample_info$Meth_Index)]
+  anno.cols = new_samp_info$colour_cat_border[c("Meth_Cluster", "Sample_Group", "Survival_Group")]
+  names(anno.cols) = c("Sub_Group", "Histology", "Survival")
+}
+annotations = annotations[which(rownames(annotations)%in%colnames(RNASeq_TMM)),]
+ha = HeatmapAnnotation(df = annotations,
+                       col=anno.cols,
+                       show_legend=TRUE,
+                       show_annotation_name = TRUE,
+                       annotation_name_side = "left",
+                       annotation_height=unit(ncol(annotations)*4, "mm"),
+                       which = "column",
+                       annotation_name_gp = gpar(fontsize=10),
+                       annotation_legend_param = list(labels_gp = gpar(fontsize=8),
+                                                      title_gp = gpar(fontsize=10, fontface="bold"),
+                                                      grid_height=unit(5,"mm"),
+                                                      grid_width=unit(5,"mm")),
+                       na_col = "#dddddd")
+rna_hmaps = list()
+rna_seq_data = list()
+for (gene_set in rna_gene_sets){
+  rna_seq_data[[gene_set]] = dplyr::filter(RNASeq_TMM, `Associated Gene Name`%in%c(genes_of_interest[[gene_set]]$Hugo_Symbol))
+  plot_rna_seq = as.data.frame(t(rna_seq_data[[gene_set]][,3:ncol(rna_seq_data[[gene_set]])]))
+  colnames(plot_rna_seq) = rna_seq_data[[gene_set]]$`Associated Gene Name`
+  if (z_score){
+    plot_rna_seq = as.data.frame(apply(plot_rna_seq, 2, function(x) (x-mean(x))/sd(x)))
+  } else {
+    plot_rna_seq = as.data.frame(apply(plot_rna_seq, 2, function(x) log2(x+1)))
+  }
+  plot_rna_seq %<>% dplyr::mutate(Sample_Name = rownames(plot_rna_seq))
+  plot_data = plot_rna_seq
+  for (gene in rna_seq_data[[gene_set]]$`Associated Gene Name`){
+    plot_data[which(is.na(plot_data[,gene])),gene] = 0
+  }
+  sample_names = plot_data$Sample_Name
+  plot_data = t(dplyr::select(plot_data, colnames(plot_data)[which(colnames(plot_data)%in%c(genes_of_interest[[gene_set]]$Hugo_Symbol))]))
+  colnames(plot_data) = sample_names
+  hm_plots = "Meth_Cluster"
+  for (hm_plot in hm_plots) {
+    hm_hmaps = list()
+    hm_plot_data = plot_data[, rownames(annotations)]
+    hm_plot_data = hm_plot_data[, which(colnames(hm_plot_data)%in%colnames(rna_seq_data[[gene_set]]))]
+    if (z_score){
+      hm_colours = c("dodgerblue4", "white", "firebrick") 
+    } else {
+      hm_colours = c("navy", "darkcyan", "gold")
+    }
+    if (gene_set=="NE"){
+      hm_hmaps[[hm_plot]] = grid.grabExpr(draw(Heatmap(hm_plot_data[, which(colnames(hm_plot_data)%in%colnames(rna_seq_data[[gene_set]]))],
+                                                       col=colorRamp2(c(ifelse(z_score, -2, 0), ifelse(z_score, 0, 5), ifelse(z_score, 4, 9)), hm_colours),
+                                                       cluster_rows=FALSE, 
+                                                       cluster_columns=FALSE,
+                                                       row_names_side="left",
+                                                       row_names_gp=gpar(fontsize=8),
+                                                       column_split = new_samp_info$Sample_Clusters[[hm_plot]][which(names(new_samp_info$Sample_Clusters[[hm_plot]])%in%colnames(rna_seq_data[[gene_set]]))],
+                                                       column_title=paste(study_name, "-", "RNASeq for", toupper(gene_set), "genes by", gsub("_", "", hm_plot)),
+                                                       column_title_gp = gpar(fontsize=10),
+                                                       show_column_names = FALSE,
+                                                       top_annotation = ha,
+                                                       heatmap_legend_param = list(title=ifelse(z_score, "RNA Z-score", "Log2(exp+1)"),
+                                                                                   title_gp=gpar(fontsize=10, fontface="bold"), 
+                                                                                   labels_gp=gpar(fontsize=8), 
+                                                                                   legend_height=unit(5,"cm"), 
+                                                                                   grid_width=unit(5,"mm"),
+                                                                                   just=c("right", "top")))))
+    } else {
+      hm_hmaps[[hm_plot]] = grid.grabExpr(draw(Heatmap(hm_plot_data[, which(colnames(hm_plot_data)%in%colnames(rna_seq_data[[gene_set]]))],
+                                                       col=colorRamp2(c(ifelse(z_score, -2, 0), ifelse(z_score, 0, 5), ifelse(z_score, 4, 9)), hm_colours),
+                                                       cluster_rows=FALSE, 
+                                                       cluster_columns=FALSE,
+                                                       row_names_side="left",
+                                                       row_names_gp=gpar(fontsize=8),
+                                                       column_split = new_samp_info$Sample_Clusters[[hm_plot]][which(names(new_samp_info$Sample_Clusters[[hm_plot]])%in%colnames(rna_seq_data[[gene_set]]))],
+                                                       column_title=paste(study_name, "-", "RNASeq for", toupper(gene_set), "genes by", gsub("_", "", hm_plot)),
+                                                       column_title_gp = gpar(fontsize=10),
+                                                       show_column_names = FALSE,
+                                                       heatmap_legend_param = list(title=ifelse(z_score, "RNA Z-score", "Log2(exp+1)"),
+                                                                                   title_gp=gpar(fontsize=10, fontface="bold"), 
+                                                                                   labels_gp=gpar(fontsize=8), 
+                                                                                   legend_height=unit(5,"cm"), 
+                                                                                   grid_width=unit(5,"mm"),
+                                                                                   just=c("right", "top")))))
+    }
+  }
+  rna_hmaps[[gene_set]] = hm_hmaps
+}
+
+```
+
+
+
+```{r plo-rna-seq-gene-gps, fig.height=12, fig.width=13 }
+for (hm_plot in hm_plots) {
+  plot1.rh = 4
+  plot1.cent = 183
+  plot1.lh = 13
+  plot_list = list(rna_hmaps$NE[[hm_plot]], rna_hmaps$`non-NE`[[hm_plot]]) 
+  plot_overview = arrangeGrob(grobs = plot_list, layout_matrix = rbind(c(rep(NA, 1), rep(1, 199)),  
+                                                                       c(rep(NA, 1), rep(1, 199)), 
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, 1), rep(1, 199)),
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh)),
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh)),
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh)),
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh)),
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh)),
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh)),
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh)),
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh)),
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh)),
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh)),
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh)),
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh)),
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh)),
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh)), 
+                                                                       c(rep(NA, plot1.rh), rep(2, plot1.cent), rep(NA, plot1.lh))
+                                                                       ))
+  cat(paste("### Gene Methylation with RNASEQ by Cluster analysis - ", hm_plot, "\n\n", sep=" "))
+  # *************************
+  # Fig 4 a
+  # *************************
+  grid.arrange(plot_overview)
+  cat(paste("\n\n", "\\pagebreak  ", "\n\n"))
+}
+```
+
+```{r create-mean-exp-for-nonNE-and-NE-gene-sets, fig.width=12, fig.height=6 }
+gene_set_rna_med = NULL
+for (gene_set in names(rna_seq_data)) {
+  plot_data = data.frame(Sample_Name = colnames(rna_seq_data[[gene_set]])[3:ncol(rna_seq_data[[gene_set]])],
+                         RNA_value = sapply(colnames(rna_seq_data[[gene_set]])[3:ncol(rna_seq_data[[gene_set]])], function(x) mean(log2(rna_seq_data[[gene_set]][,x]+1))))
+  colnames(plot_data)[which(colnames(plot_data)=="RNA_value")] = gene_set
+  if (!is.null(gene_set_rna_med)){
+    gene_set_rna_med = merge(gene_set_rna_med, plot_data, by="Sample_Name")
+  } else {
+    gene_set_rna_med = plot_data
+  }
+}
+gene_set_rna_med %<>% dplyr::mutate(Meth_Cluster = sapply(gene_set_rna_med$Sample_Name, function(x) new_samp_info$Sample_info[,meth_var][which(new_samp_info$Sample_info$Sample_Name==x)]))
+gene_set_comp_mean = list()
+for (gene_set in names(rna_seq_data)){
+  gene_set_rna_med %<>% dplyr::mutate(Gene_Set = gene_set_rna_med[, gene_set])
+  gp_levels = unique(new_samp_info$Sample_info$Meth_Cluster)[order(unique(new_samp_info$Sample_info$Meth_Cluster))]
+  p = ggplot(data=gene_set_rna_med, aes(x=Meth_Cluster, y=Gene_Set)) + geom_boxplot(aes(fill=Meth_Cluster, color=Meth_Cluster)) + 
+      scale_fill_manual(values = new_samp_info$colour_cat[[meth_var]]) + scale_color_manual(values = new_samp_info$colour_cat_border[[meth_var]]) + ylim(0, max(gene_set_rna_med$Gene_Set)+0.05*max(gene_set_rna_med$Gene_Set)) +
+      labs(title=paste("Comparison of", gene_set, "Genes by Methylation Cluster"), y="Mean Log2(TMM+1)", x="") + 
+      theme(panel.background=element_rect(fill='transparent'),
+            axis.line = element_line(color="black"),
+            axis.text.x.bottom = element_text(size=10), 
+            axis.text = element_text(size=12),
+            plot.title = element_text(size=14),
+            legend.position = "none") +
+      stat_compare_means(aes(group=Meth_Cluster), method=ifelse(length(gp_levels)>2, "kruskal.test", "wilcox.test"), comparisons=NULL)
+  my.comparisons = list(c("Group1", "Group2"), c("Group1", "Group3"), c("Group1", "Group4"), c("Group2", "Group3"), c("Group2", "Group4"), c("Group3", "Group4"))
+  p = p + stat_compare_means(method="wilcox.test", comparisons = my.comparisons, label.y = c(max(gene_set_rna_med$Gene_Set)+max(gene_set_rna_med$Gene_Set)*0.08, 
+                                                                                             max(gene_set_rna_med$Gene_Set)+max(gene_set_rna_med$Gene_Set)*0.16, 
+                                                                                             max(gene_set_rna_med$Gene_Set)+max(gene_set_rna_med$Gene_Set)*0.24,
+                                                                                             max(gene_set_rna_med$Gene_Set)+max(gene_set_rna_med$Gene_Set)*0.32,
+                                                                                             max(gene_set_rna_med$Gene_Set)+max(gene_set_rna_med$Gene_Set)*0.40,
+                                                                                             max(gene_set_rna_med$Gene_Set)+max(gene_set_rna_med$Gene_Set)*0.48)) + 
+    ylim(0, max(gene_set_rna_med$Gene_Set)+max(gene_set_rna_med$Gene_Set)*0.55)
+  p = p + annotate("text", x=2, y=1, label=paste("Groups1&2 vs Group3 p = ", round(wilcox.test(gene_set_rna_med$Gene_Set[which(gene_set_rna_med$Meth_Cluster%in%c("Group1", "Group2"))], gene_set_rna_med$Gene_Set[which(gene_set_rna_med$Meth_Cluster%in%c("Group3"))])$p.value,4)))
+  gene_set_comp_mean[[gene_set]] = ggplotGrob(p)   
+}
+gt = arrangeGrob(grobs=gene_set_comp_mean[c("NE", "non-NE")], ncol=2)
+# *************************
+# Fig 4 b & c
+# *************************
+grid.arrange(gt)
+
+```
+
+
+```{r look-at-meth-rna-relationships-for-genes, fig.height=5, fig.width=10 }
+# meth_rna_genes = c(DLL3="treatmant", KDM1A="special", SLFN11="parpi", KDM1A="special", SEZ6="special", CD276="special", TACSTD2="special" )
+meth_rna_genes = c(ASCL1="sclc", NEUROD1="sclc", POU2F3="sclc", YAP1="sclc", #KDM1A="special", EZH2="special", SLFN11="parpi",
+                   MYC="oncogene", MYCN="oncogene", MYCL1="oncogene", REST="sclc", PLCG2="special" , HMGB3="extra", #DLL3="treatmant", SEZ6="special", CD276="special", TACSTD2="special", 
+                   CD274="extra", CTLA4="extra" #, PDCD1="extra", NOTCH1="non-neuro", NOTCH2="non-neuro", NOTCH3="non-neuro"
+                   )
+# create CNV data for RNASeq samples and genes above
+#
+#  *************** copy_dir = <directory where copy number details are stored> *********************
+CNV_data = NULL
+for (donor in gsub("_T", "", colnames(RNASeq_TMM)[grep("_T", colnames(RNASeq_TMM))])){
+  sample_study = dplyr::filter(study_data, donorLabel==donor, nchar(ascatAnalysis)>25)
+  if (nrow(sample_study)>1 && length(unique(sample_study$testSequencingPlatform))>1){
+    sample_study %<>% dplyr::filter(!testSequencingPlatform=="MGIseq2000")
+  }
+  sample.copy = paste0(copy_dir, donor, "/", gsub("analysis:", "", sample_study$ascatAnalysis), ".copynumber.ascat.tsv")
+  if (file.exists(sample.copy)){
+    message(paste("ascat copy number exists for", donor))
+    sample.ascat = as.data.frame(fread(file=sample.copy))
+    sample.gene = as.data.frame(fread(file=paste0(copy_dir, donor, "/", gsub("analysis:", "", sample_study$ascatAnalysis), ".genes.pc.best.cn.txt")))
+    sample.gene %<>% dplyr::filter(gene_symbol%in%gsub("MYCL1", "MYCL", names(meth_rna_genes)))
+    # message(paste("all genes are", paste(unique(sample.gene$SegmentDescription, collapse="or"))))
+    sample.cn = data.frame(Sample_Name = rep(donor, length(names(meth_rna_genes))),
+                           Genes = names(meth_rna_genes),
+                           CN_values = sapply(gsub("MYCL1", "MYCL", names(meth_rna_genes)), function(x) ifelse(dplyr::filter(sample.gene, gene_symbol==x)$SegmentDescription=="span",
+                                                                                                               (dplyr::filter(sample.ascat, chromosome==sample.gene$chromosome[which(sample.gene$gene_symbol==x)]) %>%
+                                                                                                                      dplyr::filter(start<sample.gene$gene_start[which(sample.gene$gene_symbol==x)]&end>sample.gene$gene_end[which(sample.gene$gene_symbol==x)]))$median.rawCN,
+                                                                                                               (dplyr::filter(sample.ascat, chromosome==sample.gene$chromosome[which(sample.gene$gene_symbol==x)]) %>%
+                                                                                                                      dplyr::filter((start>sample.gene$gene_start[which(sample.gene$gene_symbol==x)]&start>sample.gene$gene_end[which(sample.gene$gene_symbol==x)])|
+                                                                                                                                      (end>sample.gene$gene_start[which(sample.gene$gene_symbol==x)]&end<sample.gene$gene_end[which(sample.gene$gene_symbol==x)])|
+                                                                                                                                      (start>sample.gene$gene_start[which(sample.gene$gene_symbol==x)]&end<sample.gene$gene_end[which(sample.gene$gene_symbol==x)])))$median.rawCN)))
+    CNV_data = rbind(CNV_data, sample.cn)
+  } else {
+    message(paste("No ascat copy number analysis exists for", donor))
+  }
+}
+meth_rna_gene_plots = list()
+for (gene in names(meth_rna_genes)){
+  meth_rna_gene_plots[[gene]] = draw.meth.rna.box.corr.plot(meth.data=meth_norm,
+                                                            samp.info = new_samp_info$Sample_info,
+                                                            RNA.info=RNASeq_TMM,
+                                                            cnv.data = CNV_data,
+                                                            cat.cols = new_samp_info$colour_cat,
+                                                            cat.cols.bold = new_samp_info$colour_cat_border,
+                                                            gene.info=gene_info,
+                                                            genes=gene,
+                                                            gene.type=meth_rna_genes[gene],
+                                                            violin=FALSE,
+                                                            plot.sd=0.1,
+                                                            multi.test = "kruskal.test",
+                                                            single.test = "wilcox.test",
+                                                            all.comp = ifelse(gene%in%c("CD274", "CTLA4"), TRUE, FALSE))
+}
+meth_rna_gene_sets = c("apm", "cytolytic")
+meth_rna_gene_set_plots = list()
+for (gene_set in meth_rna_gene_sets){
+  gene = genes_of_interest[[gene_set]]$Hugo_Symbol
+  meth_rna_gene_set_plots[[gene_set]] = draw.meth.rna.box.corr.plot(meth.data=meth_norm,
+                                                                    samp.info = new_samp_info$Sample_info,
+                                                                    RNA.info=RNASeq_TMM,
+                                                                    cat.cols = new_samp_info$colour_cat,
+                                                                    cat.cols.bold = new_samp_info$colour_cat_border,
+                                                                    gene.info=gene_info,
+                                                                    genes=gene,
+                                                                    gene.type=gene_set,
+                                                                    violin=FALSE,
+                                                                    plot.sd=0.1,
+                                                                    multi.test = "kruskal.test",
+                                                                    single.test = "wilcox.test",
+                                                                    all.comp = TRUE)
+}
+```
+
+
+```{r plot-meth-rna-corr-plots-for-paper-ascl1-neurod1-pou2f3-yap1, fig.height=20, fig.width=25}
+# *************************
+# Fig S3 a, b, c & d
+# *************************
+grid.arrange(meth_rna_gene_plots$ASCL1$meth$Meth_Promoter_Var, meth_rna_gene_plots$ASCL1$meth$Meth_Body_Var, meth_rna_gene_plots$ASCL1$rna, meth_rna_gene_plots$ASCL1$corr$Meth_Promoter_Var, meth_rna_gene_plots$ASCL1$corr$Meth_Body_Var,
+             meth_rna_gene_plots$NEUROD1$meth$Meth_Promoter_Var, meth_rna_gene_plots$NEUROD1$meth$Meth_Body_Var, meth_rna_gene_plots$NEUROD1$rna, meth_rna_gene_plots$NEUROD1$corr$Meth_Promoter_Var, meth_rna_gene_plots$NEUROD1$corr$Meth_Body_Var,
+             meth_rna_gene_plots$POU2F3$meth$Meth_Promoter_Var, meth_rna_gene_plots$POU2F3$meth$Meth_Body_Var, meth_rna_gene_plots$POU2F3$rna, meth_rna_gene_plots$POU2F3$corr$Meth_Promoter_Var, meth_rna_gene_plots$POU2F3$corr$Meth_Body_Var,
+             meth_rna_gene_plots$YAP1$meth$Meth_Promoter_Var, meth_rna_gene_plots$YAP1$meth$Meth_Body_Var, meth_rna_gene_plots$YAP1$rna, meth_rna_gene_plots$YAP1$corr$Meth_Promoter_Var, meth_rna_gene_plots$YAP1$corr$Meth_Body_Var, nrow=4)
+
+```
+
+
+
+```{r plot-rna-plots-for-paper-amp-cytolytic-kdm1a-ezh2-pdl1-ctla4, fig.height=5, fig.width=25}
+# *************************
+# Fig 3 b, c, d, e & f
+# *************************
+grid.arrange(gp2_cells_p$`T-cells_CD8`, meth_rna_gene_set_plots$apm$rna, meth_rna_gene_set_plots$cytolytic$rna, meth_rna_gene_plots$CD274$rna, meth_rna_gene_plots$CTLA4$rna, nrow=1) 
+
+```
+
+```{r plot-rna-plots-for-paper-myc-mycn-mycl1-rest-plcg2-hmgb3, fig.height=5, fig.width=10}
+# *************************
+# Fig 4 d & e
+# *************************
+grid.arrange(meth_rna_gene_plots$PLCG2$rna, meth_rna_gene_plots$HMGB3$rna, nrow=1)
+
+```
+
+
+```{r plot-meth-rna-corr-plots-for-paper-myc-mycn-mycl1-rest-plcg2, fig.height=20, fig.width=30}
+# grid and plots overview
+gg_meth_rna_plots = list(meth_rna_gene_plots$MYC$rna, meth_rna_gene_plots$MYC$meth$Meth_Promoter, meth_rna_gene_plots$MYC$meth$Meth_Body_Var, meth_rna_gene_plots$MYC$corr$Meth_Promoter, meth_rna_gene_plots$MYC$corr$Meth_Body_Var, meth_rna_gene_plots$MYC$corr$CNV_value,
+                         meth_rna_gene_plots$MYCN$rna, meth_rna_gene_plots$MYCN$meth$Meth_Promoter_Var, meth_rna_gene_plots$MYCN$meth$Meth_Body_Var, meth_rna_gene_plots$MYCN$corr$Meth_Promoter_Var, meth_rna_gene_plots$MYCN$corr$Meth_Body_Var, meth_rna_gene_plots$MYCN$corr$CNV_value,
+                         meth_rna_gene_plots$MYCL1$rna, meth_rna_gene_plots$MYCL1$meth$Meth_Promoter, meth_rna_gene_plots$MYCL1$meth$Meth_Body_Var, meth_rna_gene_plots$MYCL1$corr$Meth_Promoter, meth_rna_gene_plots$MYCL1$corr$Meth_Body_Var, meth_rna_gene_plots$MYCL1$corr$CNV_value,
+                         meth_rna_gene_plots$REST$rna, meth_rna_gene_plots$REST$meth$Meth_Promoter_Var, meth_rna_gene_plots$REST$meth$Meth_Body_Var, meth_rna_gene_plots$REST$corr$Meth_Promoter_Var, meth_rna_gene_plots$REST$corr$Meth_Body_Var, meth_rna_gene_plots$REST$corr$CNV_value)
+                         # meth_rna_gene_plots$PLCG2$meth$Meth_Promoter_Var, meth_rna_gene_plots$PLCG2$meth$Meth_Body_Var, meth_rna_gene_plots$PLCG2$rna, meth_rna_gene_plots$PLCG2$corr$Meth_Promoter_Var, meth_rna_gene_plots$PLCG2$corr$Meth_Body_Var)
+gt = arrangeGrob(grobs=gg_meth_rna_plots, layout_matrix=rbind(c(1, 2, 3, 4, 5, 6),
+                                                              c(7, 8, 9, 10, 11, 12),
+                                                              c(13, 14, 15, 16, 17, 18),
+                                                              c(19, 20, 21, 22, 23, 24)))
+                                                              # c(21, 22, 23, 24, 25)))
+# *************************
+# Fig S4 a, b, c & d
+# *************************
+grid.arrange(gt)
+
+```
+
+
+```{r compare-sclc-rna-with-other-subtypes, fig.width=12, fig.height=7  }
+rna_genes = c(SEZ6="special", CD276="special", TACSTD2="special", DLL3="treatment", SLFN11="parpi")
+rna_study_data %<>% dplyr::mutate(Subtype = sapply(Donor, function(x) ifelse(paste0(x, "_T")%in%colnames(RNASeq_TMM), 
+                                                                             cluster_data$Meth_Cluster[which(cluster_data$Donor_Label==paste0(x, "_T"))],
+                                                                             rna_study_data$`Tumour type`[which(rna_study_data$Donor==x)])))
+gp_levels = c("Group1", "Group2", "Group3", "Group4", "Adeno", "NSCLC", "Squamous")
+plot_rna_info = dplyr::filter(rna_study_data, Subtype%in%gp_levels) 
+plot_rna_info$Subtype = factor(plot_rna_info$Subtype, levels=gp_levels)
+
+violin=FALSE
+multi.test = "kruskal.test"
+single.test = "wilcox.test"
+sub_col = c(new_samp_info$colour_cat_border$Meth_Cluster, sample_border_colours$Sample_Group[c("Adeno", "NSCLC", "Squamous")])
+sub_fill = c(new_samp_info$colour_cat$Meth_Cluster, sample_colours$Sample_Group[c("Adeno", "NSCLC", "Squamous")])
+exp.grob = list()
+for (rna_gene in names(rna_genes)){
+  plot_rna_info %<>% dplyr::mutate(RNA_Exp = sapply(Donor, function(x) log2(RNASeq_TMM_all[which(RNASeq_TMM_all$`Associated Gene Name`==rna_gene), paste0(x, "_T")]+1)))
+  p.exp = ggplot(data=plot_rna_info, aes(x=Subtype, y=RNA_Exp))
+    if (violin){
+      p.exp = p.exp + geom_violin(width=0.9, aes(fill=Subtype, color=Subtype)) + 
+        stat_summary(fun=mean, geom="point", size=2, color=sub_col[gp_levels])
+    } else {
+      p.exp = p.exp + geom_boxplot(aes(fill=Subtype, color=Subtype))
+    }
+    p.exp = p.exp + scale_fill_manual(values = sub_fill) + scale_color_manual(values = sub_col) + ylim(0, max(plot_rna_info$RNA_Exp)+max(plot_rna_info$RNA_Exp)*0.55) + #ylim(0,max(plot_rna_info$RNA_Exp)+max(plot_rna_info$RNA_Exp)*0.1) +
+      labs(title=paste0(rna_gene, " Exp per Meth Cluster with other Lung Subtypes."), 
+           y=paste(rna_gene, "Expresion\n", "Log2(exp+1)"), 
+           x="") + 
+      theme(panel.background=element_rect(fill='transparent'),
+            axis.line = element_line(color="black"),
+            axis.title = element_text(size=18),
+            axis.text.x.bottom = element_text(size=14), # hjust=1, size=10, angle=90
+            axis.text = element_text(size=12),
+            plot.title = element_text(size=18),
+            legend.position = "none") 
+  my.comparisons = list(c("Group1", "Group2"), c("Group1", "Group3"), c("Group1", "Group4"), c("Group2", "Group3"), c("Group2", "Group4"), c("Group3", "Group4"))
+  p.exp = p.exp + stat_compare_means(method="wilcox.test", comparisons = my.comparisons, label.y = c(max(plot_rna_info$RNA_Exp)+max(plot_rna_info$RNA_Exp)*0.08, 
+                                                                                             max(plot_rna_info$RNA_Exp)+max(plot_rna_info$RNA_Exp)*0.16, 
+                                                                                             max(plot_rna_info$RNA_Exp)+max(plot_rna_info$RNA_Exp)*0.24,
+                                                                                             max(plot_rna_info$RNA_Exp)+max(plot_rna_info$RNA_Exp)*0.32,
+                                                                                             max(plot_rna_info$RNA_Exp)+max(plot_rna_info$RNA_Exp)*0.40,
+                                                                                             max(plot_rna_info$RNA_Exp)+max(plot_rna_info$RNA_Exp)*0.48)) + 
+    stat_compare_means(aes(group=Subtype), method=ifelse(length(gp_levels)>2, multi.test, single.test), label="p.format", label.x.npc = 0.7) + 
+    stat_compare_means(aes(group=Subtype), method=ifelse(length(gp_levels)>2, multi.test, single.test), label="p.signif", label.x.npc = 0.85)
+  if (rna_gene=="SLFN11"){
+    p.exp = p.exp + annotate("text", x=2, y=1, label=paste("Groups1&2 vs Groups3&4   p = ", round(wilcox.test(plot_rna_info$RNA_Exp[which(plot_rna_info$Subtype%in%c("Group1", "Group2"))], plot_rna_info$RNA_Exp[which(plot_rna_info$Subtype%in%c("Group3", "Group4"))])$p.value,4)))
+    p.exp = p.exp + annotate("text", x=2, y=0.5, label=paste("Groups1&3 vs Groups2&4   p = ", round(wilcox.test(plot_rna_info$RNA_Exp[which(plot_rna_info$Subtype%in%c("Group1", "Group3"))], plot_rna_info$RNA_Exp[which(plot_rna_info$Subtype%in%c("Group2", "Group4"))])$p.value,4)))
+    # p.exp = p.exp + annotate("text", x=2, y=0, label=paste("Groups1 vs Groups2&4   p = ", round(wilcox.test(plot_rna_info$RNA_Exp[which(plot_rna_info$Subtype%in%c("Group1"))], plot_rna_info$RNA_Exp[which(plot_rna_info$Subtype%in%c("Group2", "Group4"))])$p.value,4)))
+  } else if (rna_gene=="DLL3"){
+    p.exp = p.exp + annotate("text", x=2, y=1, label=paste("Groups1&2 vs Group3   p = ", round(wilcox.test(plot_rna_info$RNA_Exp[which(plot_rna_info$Subtype%in%c("Group1", "Group2"))], plot_rna_info$RNA_Exp[which(plot_rna_info$Subtype%in%c("Group3"))])$p.value,4)))
+    p.exp = p.exp + annotate("text", x=2, y=0.5, label=paste("Groups1&2 vs Group4   p = ", round(wilcox.test(plot_rna_info$RNA_Exp[which(plot_rna_info$Subtype%in%c("Group1", "Group2"))], plot_rna_info$RNA_Exp[which(plot_rna_info$Subtype%in%c("Group4"))])$p.value,4)))
+     p.exp = p.exp + annotate("text", x=2, y=0, label=paste("Groups1&2 vs Groups3&4   p = ", round(wilcox.test(plot_rna_info$RNA_Exp[which(plot_rna_info$Subtype%in%c("Group1", "Group2"))], plot_rna_info$RNA_Exp[which(plot_rna_info$Subtype%in%c("Group3", "Group4"))])$p.value,4)))
+  } else if (rna_gene=="TACSTD2"){
+    p.exp = p.exp + annotate("text", x=2, y=0, label=paste("Groups1&2&3 vs Group4   p = ", round(wilcox.test(plot_rna_info$RNA_Exp[which(plot_rna_info$Subtype%in%c("Group1", "Group2", "Group3"))], plot_rna_info$RNA_Exp[which(plot_rna_info$Subtype%in%c("Group4"))])$p.value,4)))
+  }
+  exp.grob[[rna_gene]] = ggplotGrob(p.exp)
+}
+
+
+```
+
+```{r plot-rnaseq_comparison-plots-for-paper-sez6-tacstd2-dll3-cd276-slfn11-ezh2-kdm1a, fig.height=20, fig.width=18}
+gg_rna_lung = list(exp.grob$SLFN11, exp.grob$CD276, exp.grob$SEZ6, exp.grob$DLL3, exp.grob$TACSTD2) # , exp.grob$EZH2, exp.grob$KDM1A
+gt = arrangeGrob(grobs=gg_rna_lung, layout_matrix=rbind(c(1, 1, 1, 1, 1, 1, NA, NA, NA, 2, 2, 2, 2, 2, 2),
+                                                        c(3, 3, 3, 3, 3, 3, NA, NA, NA, 4, 4, 4, 4, 4, 4),
+                                                        c(NA, NA, NA, NA, 5, 5, 5, 5, 5, 5, NA, NA, NA, NA, NA)))
+# *************************
+# Fig 5 a, b, c, d, e
+# *************************
+grid.arrange(gt)
+
+```
+
