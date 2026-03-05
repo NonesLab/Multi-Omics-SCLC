@@ -2,7 +2,7 @@
 Code to re-create results and figures from "Multi-omics reveals key molecular and cellular features of advanced small cell lung cancers associated with distinct therapeutic opportunities"
 The scripts presented here are related to the article “Multi-omics reveals key molecular and cellular features of advanced small cell lung cancers associated with distinct therapeutic opportunities” Nones et al. 2026 Genome Medicine, xxx.
 
- ![Figure 6 overview](/../../main/Nones-image/Figure6_revised.pdf)
+ ![Figure 6 overview](/../../main/Figure6.png)
  
 This figure was created in BioRender (www.biorender.com).
 Summary:
