@@ -2,8 +2,11 @@
 Code to re-create results and figures from "Multi-omics reveals key molecular and cellular features of advanced small cell lung cancers associated with distinct therapeutic opportunities"
 The scripts presented here are related to the article “Multi-omics reveals key molecular and cellular features of advanced small cell lung cancers associated with distinct therapeutic opportunities” Nones et al. 2026 Genome Medicine, xxx.
 
- ![Figure 6 overview](/../../main/Figure6.png)
+
+ ![Figure 6 overview](/../../blob/main/Figure6.png)
  
+
+
 This figure was created in BioRender (www.biorender.com).
 Summary:
 This repository contains the workflow used to generate the data presented in the manuscript. This workflow uses idat.files (methylation arrays raw data) and outputs from other Tools and analysis workflows referenced below.
